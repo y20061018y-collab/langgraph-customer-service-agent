@@ -99,7 +99,7 @@ def test_full_loop():
     for tm in tool_messages:
         print(f"   - {tm.name}: {tm.content[:80]}")
 
-    print("\n🎉 V0 最小闭环跑通：agent → tools → agent → tools → agent → tools → agent(结束)")
+    print("\n🎉 最小闭环跑通：agent → tools → agent → tools → agent → tools → agent(结束)")
 
 
 # ---------- V6：会话记忆 ----------

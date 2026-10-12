@@ -1,5 +1,5 @@
 """
-V0 只需要一个接口：POST /chat
+核心接口是 POST /chat
 
 返回结构里特意把"这一轮到底调用了哪些工具、传了什么参数、拿到了什么结果"
 也吐出来 —— 这条轨迹不是给用户看的，是给你自己调试、以及以后面试时
@@ -19,7 +19,7 @@ from pydantic import BaseModel
 import db
 from agent import build_agent
 
-app = FastAPI(title="企业客服Agent V0")
+app = FastAPI(title="企业客服与工单 Agent")
 
 _agent = None
 
