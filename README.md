@@ -6,15 +6,15 @@
 
 ## 核心结果
 
-评测集共 23 个用例，分 5 类，用真实 LLM 运行（历史运行，结果文件中记录的模型名为 `deepseek-v4-flash`，temperature=0）。当前演示和后续运行使用 `deepseek-flash`（DeepSeek 接口当前接受的名字）：
+评测集共 23 个用例，分 5 类，用真实 LLM 运行（历史运行，结果文件中记录的模型名为 `deepseek-v4-flash`，temperature=0）。当前演示和评测使用 `deepseek-flash`（见 `evals/results/eval_20261012_155149.json` 的 meta）：
 
-| 轮次 | 通过率 | 来源 |
-| --- | --- | --- |
-| 调优前基线 | 87%（20/23），失败用例：tool_select_003、tool_select_005、memory_002 | `evals/results/eval_20260830_183442.json` |
-| 最新一次 | **100%（23/23）** | [`evals/results/eval_20260830_202922.json`](evals/results/eval_20260830_202922.json) |
-| DeepSeek 配置（deepseek-flash） | **100%（23/23）**，无 error 用例，未重跑 | [`evals/results/eval_20261012_155149.json`](evals/results/eval_20261012_155149.json) |
+| 轮次 | 模型（meta） | 通过率 | 结果文件 |
+| --- | --- | --- | --- |
+| 2026-08-30 调优前基线 | `deepseek-v4-flash` | 87%（20/23），失败用例：tool_select_003、tool_select_005、memory_002 | [`evals/results/eval_20260830_183442.json`](evals/results/eval_20260830_183442.json) |
+| 2026-08-30 调优后 | `deepseek-v4-flash` | **100%（23/23）** | [`evals/results/eval_20260830_202922.json`](evals/results/eval_20260830_202922.json) |
+| 2026-10-12 | `deepseek-flash` | **100%（23/23）**，无 error 用例，未重跑 | [`evals/results/eval_20261012_155149.json`](evals/results/eval_20261012_155149.json) |
 
-最新一次的分类结果（同一个文件 `eval_20260830_202922.json` 的统计）：工具选择 6/6、边界拒绝 4/4、多轮记忆 4/4、RAG 检索 4/4、鲁棒性 5/5。
+2026-08-30 调优后一次的分类结果（`eval_20260830_202922.json` 的统计）：工具选择 6/6、边界拒绝 4/4、多轮记忆 4/4、RAG 检索 4/4、鲁棒性 5/5。
 
 3 个失败都出在"何时建工单"，但方向相反：tool_select_005 在用户只是查物流时主动建了单；tool_select_003、memory_002 在用户明确要求建单时没有建（改去检索知识库）。docs/tuning-log.md 把原因归为 prompt 里建单时机的策略缺失，改 prompt 后下一轮为 23/23，但 tool_select_003 在之后的一轮又失败过，随后补充了规则。每一轮的失败分析和修复过程见 [docs/tuning-log.md](docs/tuning-log.md)。
 
@@ -85,7 +85,7 @@ docker compose exec app python scripts/build_kb.py --rebuild
 
 ### 方式二：本地运行
 
-Dockerfile 使用 Python 3.12.10；本地评测在 3.12 上运行过。另需一个可用的 PostgreSQL。
+Dockerfile 使用 Python 3.14；本机开发环境为 Python 3.12.10；评测在 Docker 容器（Python 3.14.8）中运行。另需一个可用的 PostgreSQL。
 
 ```bash
 pip install -r requirements.txt
@@ -120,7 +120,7 @@ node web/markdown.test.js
 - 对话模型：deepseek-flash（作者按录制时 `.env` 里的 `LLM_MODEL_NAME` 填写）
 - Embedding 模型：embedding-3（`.env.example` 的默认值是智谱 `embedding-3`；录制时若改过 `EMBEDDING_MODEL_NAME` 以实际为准）
 
-> `docs/demo.gif` 由作者录制后放入，在此之前上图不显示。演示用的 4 条对话和预期现象见 [docs/demo-script.md](docs/demo-script.md)。
+> `docs/demo.gif` 演示了订单查询和分期付款检索。演示用的 4 条对话和预期现象见 [docs/demo-script.md](docs/demo-script.md)。
 
 界面所需的检索信息来自 `POST /chat` 响应里新增的 `retrievals` 字段（`query`、`status`、`degraded`、`hits[source, similarity, snippet]`）。`status` 取值 `hit` / `not_found`（全部低于阈值）/ `kb_not_built` / `error`（检索异常，如 embedding 接口或网络故障）/ `unknown`（输出格式无法识别，此时 `degraded` 为 `null`）。它由 `search_knowledge` 的输出文本解析而来（见 `retrieval_trace.py` 的 `parse_retrieval`），原有字段不变；被相似度阈值过滤掉的片段不会出现在其中。
 
@@ -136,7 +136,7 @@ python evals/run_eval.py --cases evals/holdout_cases.json    # 指定用例文�
 - 评测会调用真实模型并产生费用，也会真实写入工单（运行结束会报告新建的 ticket_id）；评测用的会话历史会自动清理。
 - 每次运行的结果保存在 `evals/results/eval_*.json`，最新的报告是 `latest_report.md`。用例定义在 `evals/cases.json`。`python evals/summarize_results.py` 会把 `results/` 下全部运行记录汇总成表格（[docs/tuning-log.md](docs/tuning-log.md) 末尾的附录就是它生成的）。
 - `--cases`：非默认用例集的结果文件以用例集文件名为前缀（如 `holdout_cases_<时间>.json`），报告为 `<用例集名>_latest_report.md`，不会覆盖调优集的结果。
-- `--ids a,b`：只重跑指定用例，**只用于重跑检索状态为 `error` 的用例**（embedding 接口或网络故障等基础设施问题，规则见 [evals/HOLDOUT.md](evals/HOLDOUT.md)）。重跑的结果文件带 `_rerun` 后缀（如 `holdout_cases_rerun_<时间>.json`），报告为 `*_latest_report_rerun.md`；新旧两份结果都保留，不覆盖完整运行。
+- `--ids a,b`：只重跑指定用例。**按约定**只用于重跑检索状态为 `error` 的用例（embedding 接口或网络故障等基础设施问题，规则见 [evals/HOLDOUT.md](evals/HOLDOUT.md)）；脚本只校验 id 是否存在，不强制只重跑 error 用例。重跑的结果文件带 `_rerun` 后缀（如 `holdout_cases_rerun_<时间>.json`），报告为 `*_latest_report_rerun.md`；新旧两份结果都保留，不覆盖完整运行。
 - 结果文件里每个用例新增了三个只用于留档、不参与判定的字段：`tool_outputs`（每次工具调用的返回，原文只保留前 500 个字符，并带 `output_chars` / `truncated`）、`retrievals`（每次 `search_knowledge` 调用的结构化解析：`status` / `degraded` / `hits`）、`retrieval_status_counts`（5 种检索状态各出现几次）。`meta` 里相应增加 `cases_file`、`ids`、`retrieval_error_ids`、`retrieval_unknown_ids`。这样可以区分"相似度低于阈值的降级（`not_found`）"和"检索调用异常（`error`）"。此前的 8 个历史结果文件没有这些字段。
 
 ## 验证集
@@ -149,10 +149,10 @@ python evals/run_eval.py --cases evals/holdout_cases.json    # 指定用例文�
 
 ## 已知局限与下一步
 
-- 评测规模小：23 个用例，只测了一个模型。回复断言用的是关键词包含，比较宽松；历史上出现过偶发失败（tool_select_003、rag_001），见 `evals/results/` 中的历史记录。
+- 评测规模小：23 个用例，只在 DeepSeek 的对话模型上测过（结果文件里有两个模型 ID：`deepseek-v4-flash`、`deepseek-flash`），没有做跨厂商对比。回复断言用的是关键词包含，比较宽松；历史上出现过偶发失败（tool_select_003、boundary_004、rag_001），见 `evals/results/` 中的历史记录。
 - RAG 方案比较基础：按字符长度切分，没有 rerank 和混合检索；相似度阈值 0.25 是经验值，验证情况见下一条。
-- 相似度阈值 0.25 没有用无关问题的真实相似度分布验证过。机制上（见 `rag.py` 的 `search()`），检索固定取 top_k=3，只按阈值过滤：只要有片段分数超过 0.25，即使问题与知识库内容无关，这些片段也会交给模型。演示时对"你们支持分期付款吗？"（`knowledge/` 中没有该内容）实际检索了一次（对话模型 `deepseek-flash`，embedding 为智谱 `embedding-3`）：返回 3 个无关片段（发票政策 0.58、价保规则 0.55、退货政策总则 0.54），均高于阈值 0.25，未触发"未找到"降级；但模型最终回复明确说明知识库中没有分期付款的规则，没有编造。这只是单个问题的观察：它说明 0.25 在这个问题上起不到过滤作用，目前防编造主要靠提示词和模型本身；阈值整体表现仍未验证，计划用一批无关问题统计相似度分布后再标定。
-- 演示和评测中观察到偶发的 embedding 请求 SSL 断连（`SSL: UNEXPECTED_EOF_WHILE_READING`），多次失败成块出现；作者用独立脚本直接调用 `rag.search` 40 次均成功。原因未定位（`rag.py` 每次请求新建连接，不是复用旧连接；异常类型目前不会被记录）。计划在 `embedding-bge-m3` 分支加日志与带退避的重试。
+- 相似度阈值 0.25 没有用无关问题的真实相似度分布验证过。机制上（见 `rag.py` 的 `search()`），检索固定取 top_k=3，只按阈值过滤：只要有片段分数超过 0.25，即使问题与知识库内容无关，这些片段也会交给模型。演示时对"你们支持分期付款吗？"（`knowledge/` 中没有该内容）实际检索了一次（对话模型 `deepseek-flash`，embedding 为智谱 `embedding-3`）：返回 3 个无关片段（发票政策 0.57、价保规则 0.54、发货时效 0.53，见 `docs/demo.gif`），均高于阈值 0.25，未触发"未找到"降级；但模型最终回复明确说明知识库中没有分期付款的规则，没有编造。这只是单个问题的观察：它说明 0.25 在这个问题上起不到过滤作用，目前防编造主要靠提示词和模型本身；阈值整体表现仍未验证，计划用一批无关问题统计相似度分布后再标定。
+- 演示和评测中观察到偶发的 embedding 请求 SSL 断连（`SSL: UNEXPECTED_EOF_WHILE_READING`），多次失败成块出现；在容器内用独立脚本连续请求未复现该错误（脚本与日志未留存）。原因未定位（`rag.py` 每次请求新建连接，不是复用旧连接；异常类型目前不会被记录）。计划在 `embedding-bge-m3` 分支加日志与带退避的重试。
 - 会话只保存用户消息和最终回复，工具调用的中间过程不入库。API 没有鉴权。
 - `test_agent.py` 依赖 PostgreSQL，不是纯单元测试。
 - 下一阶段：执行 Trace 可视化、人工审批（HITL）。

@@ -536,6 +536,7 @@ prompt 之后工具选择有没有退化"这类问题——这正是 V7 要解�
 <!-- generated-by: evals/summarize_results.py -->
 
 共 8 次运行，按时间排序。本节由 `python evals/summarize_results.py --append` 从 `evals/results/*.json` 生成，上文的文字记录未做修改。
+注：下表由早期版本的 `summarize_results.py` 生成（7 列）；当前脚本输出 8 列（多了「检索异常用例」），重新运行会得到不同的表头。
 结果文件当时没有记录所用的用例集与版本，「用例集」列为「未记录」；无法据此确认各轮运行时 cases.json 的具体内容。
 
 | # | 运行时间 | 结果文件 | 用例集 | 模型 | 通过 | 失败用例 |
