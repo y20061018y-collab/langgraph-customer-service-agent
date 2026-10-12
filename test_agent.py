@@ -55,19 +55,26 @@ def make_scripted_llm():
 
 
 def run_async(coro):
-    """在独立事件循环里跑一个协程，结束后丢弃连接池。
+    """在独立事件循环里跑一个协程，并在**同一个循环**里丢弃连接池。
 
     asyncpg 连接绑定在创建它的循环上，而 asyncio.run() 每次都开新循环；
     生产环境 uvicorn 只有一个常驻循环不受影响，但测试进程里连续多个
-    asyncio.run 会让连接池里的旧连接失效（Event loop is closed）。
-    所以每次循环结束后显式 dispose，下个循环重建连接。
+    asyncio.run 会让连接池里的旧连接失效。所以每次循环结束前显式 dispose，
+    下个循环重建连接。
+
+    dispose 必须在跑协程的同一个循环里、循环关闭之前 await：如果放在另一个
+    asyncio.run 里，关闭旧连接时会触发 "attached to a different loop" /
+    "Event loop is closed"，打印 "Exception closing connection" 堆栈。
     """
     import db
 
-    try:
-        return asyncio.run(coro)
-    finally:
-        asyncio.run(db.engine.dispose())
+    async def _wrapped():
+        try:
+            return await coro
+        finally:
+            await db.engine.dispose()
+
+    return asyncio.run(_wrapped())
 
 
 def test_full_loop():
