@@ -5,6 +5,7 @@ V7 自动化评测运行器：对 Agent 的工具选择、边界行为、多轮�
 用法（在项目根目录）：
     python evals/run_eval.py                # 跑全部用例
     python evals/run_eval.py boundary       # 只跑某一类（传类别名）
+    python evals/run_eval.py --cases evals/holdout_cases.json   # 跑验证集（结果文件以 holdout_cases_ 开头）
 
 设计说明：
 - 不走 HTTP、不起 uvicorn：直接 build_agent() 调用，多轮编排逻辑复用
@@ -14,6 +15,7 @@ V7 自动化评测运行器：对 Agent 的工具选择、边界行为、多轮�
   会话历史用 eval- 前缀的独立 session_id，跑完自动清理，不污染正常数据。
 - 评测集与断言逻辑分离：加用例只改 cases.json。
 """
+import argparse
 import asyncio
 import json
 import os
@@ -134,9 +136,25 @@ async def run_case(agent, case: dict, run_id: str) -> dict:
 
 
 async def main():
-    category_filter = sys.argv[1] if len(sys.argv) > 1 else None
+    parser = argparse.ArgumentParser(description="Agent 自动化评测")
+    parser.add_argument("category", nargs="?", help="只跑某一类用例（类别名）")
+    parser.add_argument(
+        "--cases",
+        default=CASES_FILE,
+        help="用例文件路径，默认 evals/cases.json；例如验证集：--cases evals/holdout_cases.json",
+    )
+    args = parser.parse_args()
+    category_filter = args.category
 
-    with open(CASES_FILE, encoding="utf-8") as f:
+    cases_path = args.cases
+    if not os.path.exists(cases_path):  # 允许只写 evals/ 下的文件名
+        cases_path = os.path.join(os.path.dirname(__file__), args.cases)
+    cases_name = os.path.basename(cases_path)
+    # 默认用例集沿用原来的文件名；其他用例集加前缀，避免覆盖 / 混淆
+    is_default = os.path.abspath(cases_path) == os.path.abspath(CASES_FILE)
+    cases_stem = os.path.splitext(cases_name)[0]
+
+    with open(cases_path, encoding="utf-8") as f:
         cases = json.load(f)["cases"]
     if category_filter:
         cases = [c for c in cases if c["category"] == category_filter]
@@ -178,6 +196,7 @@ async def main():
         "# Agent 评测报告",
         "",
         f"- 运行时间：{started.strftime('%Y-%m-%d %H:%M:%S')}（耗时 {duration:.0f}s）",
+        f"- 用例集：{cases_name}",
         f"- 模型：{os.getenv('LLM_MODEL_NAME', '?')}（temperature=0）",
         f"- 总用例：{total}，通过：{passed}，**通过率 {passed / total * 100:.0f}%**",
         "",
@@ -203,14 +222,17 @@ async def main():
             lines.append("")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    result_file = os.path.join(RESULTS_DIR, f"eval_{stamp}.json")
+    result_prefix = "eval" if is_default else cases_stem
+    result_file = os.path.join(RESULTS_DIR, f"{result_prefix}_{stamp}.json")
     with open(result_file, "w", encoding="utf-8") as f:
         json.dump(
-            {"meta": {"time": stamp, "model": os.getenv("LLM_MODEL_NAME"), "total": total, "passed": passed},
+            {"meta": {"time": stamp, "model": os.getenv("LLM_MODEL_NAME"), "total": total, "passed": passed,
+                      "cases_file": cases_name},
              "results": records},
             f, ensure_ascii=False, indent=2,
         )
-    report_file = os.path.join(RESULTS_DIR, "latest_report.md")
+    report_name = "latest_report.md" if is_default else f"{cases_stem}_latest_report.md"
+    report_file = os.path.join(RESULTS_DIR, report_name)
     with open(report_file, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 
