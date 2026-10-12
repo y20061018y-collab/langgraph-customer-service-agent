@@ -1,0 +1,30 @@
+# 环境与密钥（.env.example 是空值模板，需要提交）
+.env
+.env.*
+!.env.example
+
+# 虚拟环境
+.venv/
+venv/
+
+# Python 产物
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+
+# 本地生成的数据
+chroma_db/
+tickets.json
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# 本地进度记录
+TASKS.md

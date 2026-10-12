@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.venv
+venv
+.idea
+.vscode
+__pycache__
+*.pyc
+chroma_db
+tickets.json
+evals/results
+docs
+TASKS.md
+.claude
