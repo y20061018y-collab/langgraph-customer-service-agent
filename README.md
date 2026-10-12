@@ -112,7 +112,7 @@ node web/markdown.test.js
 
 服务启动后浏览器打开 <http://localhost:8000/>（端口以 `APP_PORT` 为准）即可使用演示界面：一个原生 HTML + JS 的单页（[`web/index.html`](web/index.html)），没有前端框架和构建步骤，由 FastAPI 在根路径提供。每条回复下方的"查看执行详情"可以展开，显示本轮调用了哪些工具（工具名、参数、返回摘要）和检索到的知识库片段（文件名、相似度、是否触发降级）。
 
-<!-- ![演示](docs/demo.gif) -->
+![演示](docs/demo.gif) 
 
 演示使用的模型：
 
