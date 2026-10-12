@@ -101,6 +101,16 @@ python test_agent.py
 
 测试用脚本化的假 LLM 验证状态图的流转（agent → tools → … → END）和会话窗口逻辑。它需要连接 PostgreSQL（必须通过环境变量 `DATABASE_URL` 提供连接串，未设置会直接报错），并且会真实写入一张测试工单。
 
+## 演示
+
+服务启动后浏览器打开 <http://localhost:8000/>（端口以 `APP_PORT` 为准）即可使用演示界面：一个原生 HTML + JS 的单页（[`web/index.html`](web/index.html)），没有前端框架和构建步骤，由 FastAPI 在根路径提供。每条回复下方的"查看执行详情"可以展开，显示本轮调用了哪些工具（工具名、参数、返回摘要）和检索到的知识库片段（文件名、相似度、是否触发降级）。
+
+![演示](docs/demo.gif)
+
+> `docs/demo.gif` 由作者录制后放入，在此之前上图不显示。演示用的 4 条对话和预期现象见 [docs/demo-script.md](docs/demo-script.md)。
+
+界面所需的检索信息来自 `POST /chat` 响应里新增的 `retrievals` 字段（`query`、`status`、`degraded`、`hits[source, similarity, snippet]`）。它由 `search_knowledge` 的输出文本解析而来（见 `main.py` 的 `parse_retrieval`），原有字段不变；被相似度阈值过滤掉的片段不会出现在其中。
+
 ## 复现评测
 
 ```bash
@@ -118,4 +128,4 @@ python evals/run_eval.py boundary     # 只跑某一类
 - RAG 方案比较基础：按字符长度切分，没有 rerank 和混合检索，阈值 0.25 是经验值。
 - 会话只保存用户消息和最终回复，工具调用的中间过程不入库。API 没有鉴权。
 - `test_agent.py` 依赖 PostgreSQL，不是纯单元测试。
-- 下一阶段：演示前端、执行 Trace 可视化、人工审批（HITL）。
+- 下一阶段：执行 Trace 可视化、人工审批（HITL）。
