@@ -28,3 +28,6 @@ tickets.json
 
 # 本地进度记录
 TASKS.md
+
+# Claude Code 本地目录
+.claude/
