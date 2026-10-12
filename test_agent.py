@@ -226,6 +226,59 @@ def test_parse_status_unknown():
     print("✅ status=unknown：格式异常不会被当作 hit")
 
 
+def test_parse_real_rag_search_output():
+    """用真实的 rag.search 产生输出，再交给 parse_retrieval：rag.py 的文案或片段格式一变，这里会失败。
+
+    只 monkeypatch 外部依赖（embedding 接口、ChromaDB 集合），rag.search 本身是真实代码。
+    """
+    import rag
+    from retrieval_trace import parse_retrieval
+
+    class FakeCollection:
+        def __init__(self, distances):
+            self.distances = distances
+
+        def count(self):
+            return 2
+
+        def query(self, **kwargs):
+            return {
+                "documents": [["发票政策\n支持电子普通发票。", "退款流程\n仅退款适用于未收到货。"]],
+                "metadatas": [[{"source": "11-发票政策"}, {"source": "03-退款流程与时效"}]],
+                "distances": [self.distances],
+            }
+
+    saved = (rag.embed_texts, rag.get_collection)
+    try:
+        # error：embedding 接口抛异常，rag.search 走真实的 except 分支
+        def boom(texts):
+            raise RuntimeError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF")
+
+        rag.embed_texts = boom
+        rag.get_collection = lambda: FakeCollection([0.2, 0.5])
+        out = rag.search("怎么开发票")
+        r = parse_retrieval("怎么开发票", out)
+        assert (r.status, r.degraded, r.hits) == ("error", True, []), (out, r)
+
+        # hit：相似度 0.8 / 0.5（距离 0.2 / 0.5），都高于阈值
+        rag.embed_texts = lambda texts: [[0.0] * 4 for _ in texts]
+        out = rag.search("怎么开发票")
+        r = parse_retrieval("怎么开发票", out)
+        assert (r.status, r.degraded) == ("hit", False), (out, r)
+        assert [h.source for h in r.hits] == ["11-发票政策", "03-退款流程与时效"]
+        assert [h.similarity for h in r.hits] == [0.8, 0.5]
+        assert r.hits[0].snippet == "发票政策\n支持电子普通发票。"
+        assert "如果以上片段" not in r.hits[1].snippet
+
+        # not_found：全部低于阈值（距离 0.9 -> 相似度 0.1 < 0.25）
+        rag.get_collection = lambda: FakeCollection([0.9, 0.95])
+        r = parse_retrieval("q", rag.search("q"))
+        assert (r.status, r.degraded, r.hits) == ("not_found", True, [])
+    finally:
+        rag.embed_texts, rag.get_collection = saved
+    print("✅ 真实 rag.search 的输出经 parse_retrieval：error / hit / not_found 判定正确")
+
+
 def test_eval_extract_tool_records():
     """run_eval 留档：工具返回只存前 500 字符，结构化 retrievals 全存，且只含 search_knowledge。"""
     import sys, os
@@ -372,6 +425,7 @@ if __name__ == "__main__":
     test_parse_status_kb_not_built()
     test_parse_status_error()
     test_parse_status_unknown()
+    test_parse_real_rag_search_output()
     test_eval_extract_tool_records()
     test_eval_llm_error_does_not_abort_run()
     test_chat_endpoint_and_index()
