@@ -136,7 +136,7 @@ python evals/run_eval.py --cases evals/holdout_cases.json    # 指定用例文�
 - 评测会调用真实模型并产生费用，也会真实写入工单（运行结束会报告新建的 ticket_id）；评测用的会话历史会自动清理。
 - 每次运行的结果保存在 `evals/results/eval_*.json`，最新的报告是 `latest_report.md`。用例定义在 `evals/cases.json`。`python evals/summarize_results.py` 会把 `results/` 下全部运行记录汇总成表格（[docs/tuning-log.md](docs/tuning-log.md) 末尾的附录就是它生成的）。
 - `--cases`：非默认用例集的结果文件以用例集文件名为前缀（如 `holdout_cases_<时间>.json`），报告为 `<用例集名>_latest_report.md`，不会覆盖调优集的结果。
-- `--ids a,b`：只重跑指定用例。**按约定**只用于重跑检索状态为 `error` 的用例（embedding 接口或网络故障等基础设施问题，规则见 [evals/HOLDOUT.md](evals/HOLDOUT.md)）；脚本只校验 id 是否存在，不强制只重跑 error 用例。重跑的结果文件带 `_rerun` 后缀（如 `holdout_cases_rerun_<时间>.json`），报告为 `*_latest_report_rerun.md`；新旧两份结果都保留，不覆盖完整运行。
+- `--ids a,b`：只重跑指定用例。**按约定**只用于重跑检索状态为 `error`、或对话模型调用异常（结果里 `llm_error`）的用例，即基础设施问题（规则见 [evals/HOLDOUT.md](evals/HOLDOUT.md)）；脚本只校验 id 是否存在，不强制。对话模型调用异常不再中断整轮评测：该用例标为调用异常，不计为模型判断失败、也不算通过，其余用例照常运行。`meta` 里另记录 `llm_error_ids` 和 `embedding_model`（只记模型名）。重跑的结果文件带 `_rerun` 后缀（如 `holdout_cases_rerun_<时间>.json`），报告为 `*_latest_report_rerun.md`；新旧两份结果都保留，不覆盖完整运行。
 - 结果文件里每个用例新增了三个只用于留档、不参与判定的字段：`tool_outputs`（每次工具调用的返回，原文只保留前 500 个字符，并带 `output_chars` / `truncated`）、`retrievals`（每次 `search_knowledge` 调用的结构化解析：`status` / `degraded` / `hits`）、`retrieval_status_counts`（5 种检索状态各出现几次）。`meta` 里相应增加 `cases_file`、`ids`、`retrieval_error_ids`、`retrieval_unknown_ids`。这样可以区分"相似度低于阈值的降级（`not_found`）"和"检索调用异常（`error`）"。此前的 8 个历史结果文件没有这些字段。
 
 ## 验证集

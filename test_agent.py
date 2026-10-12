@@ -258,6 +258,75 @@ def test_eval_extract_tool_records():
     print("✅ run_eval 留档：返回原文截断到 500 字符，retrievals 完整")
 
 
+def test_eval_llm_error_does_not_abort_run():
+    """对话模型调用抛异常：该用例记为调用异常（不通过、不算模型判断失败），整轮继续，结果文件照常写出。
+
+    用假的 agent（ainvoke 对含 BOOM 的消息抛异常），不调用任何真实接口；
+    结果目录指向临时目录，不污染 evals/results。
+    """
+    import json
+    import sys, os
+    import tempfile
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "evals"))
+    import run_eval
+
+    class FakeAgent:
+        async def ainvoke(self, state):
+            if any("BOOM" in str(m.content) for m in state["messages"]):
+                raise ConnectionError("fake LLM down")
+            return {"messages": [*state["messages"], AIMessage(content="好的")]}
+
+    cases = {"cases": [
+        {"id": "t_err", "category": "robustness", "description": "模型报错",
+         "messages": [{"role": "user", "content": "BOOM"}], "expect": {"reply_contains": ["好的"]}},
+        {"id": "t_ok", "category": "robustness", "description": "正常",
+         "messages": [{"role": "user", "content": "你好"}], "expect": {"reply_contains": ["好的"]}},
+    ]}
+
+    # 单个用例：异常被捕获成记录，而不是向上抛
+    rec = run_async(run_eval.run_case(FakeAgent(), cases["cases"][0], "unit"))
+    assert rec["passed"] is False and rec["failures"] == []
+    assert rec["llm_error"]["type"] == "ConnectionError" and "fake LLM down" in rec["llm_error"]["message"]
+    assert rec["llm_error"]["turn"] == 1
+    run_async(db_clear("eval-unit-t_err"))
+
+    # 整轮：走 main()，第二个用例仍然跑完并通过
+    tmp = tempfile.mkdtemp()
+    cases_path = os.path.join(tmp, "llm_err_cases.json")
+    with open(cases_path, "w", encoding="utf-8") as f:
+        json.dump(cases, f, ensure_ascii=False)
+    old = (run_eval.RESULTS_DIR, run_eval.build_agent, sys.argv)
+    run_eval.RESULTS_DIR = os.path.join(tmp, "results")
+    run_eval.build_agent = lambda: FakeAgent()
+    sys.argv = ["run_eval.py", "--cases", cases_path]
+    try:
+        run_async(run_eval.main())
+    finally:
+        run_eval.RESULTS_DIR, run_eval.build_agent, sys.argv = old
+
+    files = os.listdir(os.path.join(tmp, "results"))
+    result_file = [x for x in files if x.endswith(".json")][0]
+    assert result_file.startswith("llm_err_cases_")
+    data = json.load(open(os.path.join(tmp, "results", result_file), encoding="utf-8"))
+    by_id = {r["id"]: r for r in data["results"]}
+    assert by_id["t_err"]["passed"] is False and by_id["t_err"]["llm_error"]["type"] == "ConnectionError"
+    assert by_id["t_ok"]["passed"] is True and "llm_error" not in by_id["t_ok"]
+    assert (data["meta"]["total"], data["meta"]["passed"]) == (2, 1)
+    assert data["meta"]["llm_error_ids"] == ["t_err"]
+    import rag
+    assert data["meta"]["embedding_model"] == rag.EMBEDDING_MODEL_NAME
+    assert "API_KEY" not in json.dumps(data["meta"])
+    report = open(os.path.join(tmp, "results", "llm_err_cases_latest_report.md"), encoding="utf-8").read()
+    assert "对话模型调用异常" in report and "t_err" in report
+    assert "## 失败用例详情" not in report  # 调用异常不算模型判断失败
+    print("✅ run_eval：对话模型异常记为调用异常，整轮继续，meta 记录 embedding 模型名")
+
+
+async def db_clear(session_id):
+    import db
+    await db.clear_session(session_id)
+
+
 def test_chat_endpoint_and_index():
     """POST /chat 响应带 retrievals 新字段（旧字段不变），GET / 返回演示页。"""
     import httpx
@@ -304,4 +373,5 @@ if __name__ == "__main__":
     test_parse_status_error()
     test_parse_status_unknown()
     test_eval_extract_tool_records()
+    test_eval_llm_error_does_not_abort_run()
     test_chat_endpoint_and_index()

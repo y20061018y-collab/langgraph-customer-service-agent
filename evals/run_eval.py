@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import func, select  # noqa: E402
 
 import db  # noqa: E402
+import rag  # noqa: E402  agent 已间接导入过，这里只读 EMBEDDING_MODEL_NAME
 from agent import build_agent  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage  # noqa: E402
 from main import history_to_messages  # noqa: E402
@@ -151,16 +152,41 @@ def evaluate(expect, tool_calls, reply) -> list[str]:
     return failures
 
 
+def llm_error_record(case: dict, session_id: str, turn: int, exc: Exception) -> dict:
+    """对话模型调用抛异常时的记录。
+
+    这不是模型判断失败，所以不走 evaluate()、不产生 failures；也不是通过（passed=False）。
+    llm_error 字段非空即表示"调用异常，需按重跑规则重跑"。
+    """
+    return {
+        "id": case["id"],
+        "category": case["category"],
+        "description": case["description"],
+        "passed": False,
+        "failures": [],
+        "llm_error": {"type": type(exc).__name__, "message": str(exc)[:500], "turn": turn},
+        "tools_called": [],
+        "reply": "",
+        "session_id": session_id,
+        "tool_outputs": [],
+        "retrievals": [],
+        "retrieval_status_counts": retrieval_status_counts([]),
+    }
+
+
 async def run_case(agent, case: dict, run_id: str) -> dict:
     """跑一个用例：多轮消息在同一 session 内顺序发送，断言针对最后一轮。"""
     session_id = case.get("session_id") or f"eval-{run_id}-{case['id']}"
     turn_replies = []
 
-    for msg in case["messages"]:
+    for turn, msg in enumerate(case["messages"], start=1):
         history = await db.load_history(session_id)
         input_messages = history_to_messages(history)
         input_messages.append(HumanMessage(content=msg["content"]))
-        result = await agent.ainvoke({"messages": input_messages})
+        try:
+            result = await agent.ainvoke({"messages": input_messages})
+        except Exception as e:  # noqa: BLE001 对话模型调用失败：记录并继续，不中断整轮
+            return llm_error_record(case, session_id, turn, e)
         trace, reply = extract_trace(result)
         turn_replies.append({"tools": trace, "reply": reply, "result": result})
         await db.save_message(session_id, "user", msg["content"])
@@ -241,10 +267,12 @@ async def main():
     for case in cases:
         record = await run_case(agent, case, run_id)
         records.append(record)
-        mark = "✅" if record["passed"] else "❌"
+        mark = "✅" if record["passed"] else ("⚠️ 调用异常" if record.get("llm_error") else "❌")
         print(f"{mark} [{record['category']}] {record['id']}: {record['description']}")
         for f in record["failures"]:
             print(f"     ↳ {f}")
+        if record.get("llm_error"):
+            print(f"     ↳ {record['llm_error']['type']}: {record['llm_error']['message']}")
 
     # ---- 汇总报告 ----
     total = len(records)
@@ -278,6 +306,11 @@ async def main():
     error_ids = [r["id"] for r in records if r["retrieval_status_counts"]["error"] > 0]
     if error_ids:
         lines.append(f"- ⚠️ 检索异常（status=error，可能是基础设施故障而非模型问题）的用例：{'、'.join(error_ids)}")
+    llm_error_ids = [r["id"] for r in records if r.get("llm_error")]
+    if llm_error_ids:
+        lines.append(
+            f"- ⚠️ 对话模型调用异常的用例（不计为模型判断失败，也不算通过，需按重跑规则重跑）：{'、'.join(llm_error_ids)}"
+        )
     unknown_ids = [r["id"] for r in records if r["retrieval_status_counts"]["unknown"] > 0]
     if unknown_ids:
         lines.append(f"- ⚠️ 检索返回格式无法识别（status=unknown）的用例：{'、'.join(unknown_ids)}")
@@ -292,7 +325,13 @@ async def main():
             f"| {CATEGORY_NAMES.get(cat, cat)} | {len(rs)} | {p} | {p / len(rs) * 100:.0f}% |"
         )
 
-    failed = [r for r in records if not r["passed"]]
+    failed = [r for r in records if not r["passed"] and not r.get("llm_error")]
+    llm_errors = [r for r in records if r.get("llm_error")]
+    if llm_errors:
+        lines += ["", "## 调用异常用例（需重跑）", ""]
+        for r in llm_errors:
+            e = r["llm_error"]
+            lines.append(f"- {r['id']}（{CATEGORY_NAMES.get(r['category'])}，第 {e['turn']} 轮）：{e['type']}: {e['message']}")
     if failed:
         lines += ["", "## 失败用例详情", ""]
         for r in failed:
@@ -314,7 +353,8 @@ async def main():
         json.dump(
             {"meta": {"time": stamp, "model": os.getenv("LLM_MODEL_NAME"), "total": total, "passed": passed,
                       "cases_file": cases_name, "ids": id_filter,
-                      "retrieval_error_ids": error_ids, "retrieval_unknown_ids": unknown_ids},
+                      "retrieval_error_ids": error_ids, "retrieval_unknown_ids": unknown_ids,
+                      "llm_error_ids": llm_error_ids, "embedding_model": rag.EMBEDDING_MODEL_NAME},
              "results": records},
             f, ensure_ascii=False, indent=2,
         )

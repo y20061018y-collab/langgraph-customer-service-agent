@@ -38,7 +38,11 @@ def load_runs() -> list[dict]:
                 "retrieval_error_ids": meta.get("retrieval_error_ids"),
                 "passed": meta["passed"],
                 "total": meta["total"],
-                "failed_ids": [r["id"] for r in results if not r["passed"]],
+                "failed_ids": [
+                    r["id"] + ("（调用异常）" if r.get("llm_error") else "")
+                    for r in results
+                    if not r["passed"]
+                ],
             }
         )
     runs.sort(key=lambda r: r["time"])
