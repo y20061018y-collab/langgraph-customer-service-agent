@@ -528,3 +528,24 @@ prompt 之后工具选择有没有退化"这类问题——这正是 V7 要解�
 
 
 
+
+---
+
+## 附录：全部运行记录（脚本生成）
+
+<!-- generated-by: evals/summarize_results.py -->
+
+共 8 次运行，按时间排序。本节由 `python evals/summarize_results.py --append` 从 `evals/results/*.json` 生成，上文的文字记录未做修改。
+结果文件当时没有记录所用的用例集与版本，「用例集」列为「未记录」；无法据此确认各轮运行时 cases.json 的具体内容。
+
+| # | 运行时间 | 结果文件 | 用例集 | 模型 | 通过 | 失败用例 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 2026-08-30 18:34:42 | `eval_20260830_183442.json` | 未记录 | deepseek-v4-flash | 20/23 | tool_select_003、tool_select_005、memory_002 |
+| 2 | 2026-08-30 18:37:20 | `eval_20260830_183720.json` | 未记录 | deepseek-v4-flash | 23/23 | 无 |
+| 3 | 2026-08-30 18:39:12 | `eval_20260830_183912.json` | 未记录 | deepseek-v4-flash | 22/23 | boundary_004 |
+| 4 | 2026-08-30 18:41:49 | `eval_20260830_184149.json` | 未记录 | deepseek-v4-flash | 22/23 | tool_select_003 |
+| 5 | 2026-08-30 18:44:51 | `eval_20260830_184451.json` | 未记录 | deepseek-v4-flash | 23/23 | 无 |
+| 6 | 2026-08-30 18:46:50 | `eval_20260830_184650.json` | 未记录 | deepseek-v4-flash | 23/23 | 无 |
+| 7 | 2026-08-30 20:14:56 | `eval_20260830_201456.json` | 未记录 | deepseek-v4-flash | 22/23 | rag_001 |
+| 8 | 2026-08-30 20:29:22 | `eval_20260830_202922.json` | 未记录 | deepseek-v4-flash | 23/23 | 无 |
+
