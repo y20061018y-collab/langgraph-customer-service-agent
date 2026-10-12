@@ -87,7 +87,7 @@ docker compose exec app python scripts/build_kb.py --rebuild
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env              # 填写 LLM_* / EMBEDDING_*，并设置 DATABASE_URL
+cp .env.example .env              # 填写 LLM_* / EMBEDDING_*，并必须设置 DATABASE_URL（未设置时启动即报错）
 python scripts/seed_data.py       # 灌入模拟订单
 python scripts/build_kb.py        # 构建向量库到 ./chroma_db
 uvicorn main:app --reload
@@ -99,7 +99,7 @@ uvicorn main:app --reload
 python test_agent.py
 ```
 
-测试用脚本化的假 LLM 验证状态图的流转（agent → tools → … → END）和会话窗口逻辑。它需要连接 PostgreSQL（读取 `DATABASE_URL`），并且会真实写入一张测试工单。
+测试用脚本化的假 LLM 验证状态图的流转（agent → tools → … → END）和会话窗口逻辑。它需要连接 PostgreSQL（必须通过环境变量 `DATABASE_URL` 提供连接串，未设置会直接报错），并且会真实写入一张测试工单。
 
 ## 复现评测
 
