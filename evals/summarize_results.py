@@ -32,7 +32,10 @@ def load_runs() -> list[dict]:
                 "file": os.path.basename(path),
                 "time": datetime.strptime(meta["time"], "%Y%m%d_%H%M%S"),
                 "model": meta.get("model") or "未记录",
-                "cases_file": meta.get("cases_file") or "未记录",
+                "cases_file": (meta.get("cases_file") or "未记录")
+                + (f"（重跑：{'、'.join(meta['ids'])}）" if meta.get("ids") else ""),
+                # 旧结果文件没有该字段 -> None，表格显示"未记录"
+                "retrieval_error_ids": meta.get("retrieval_error_ids"),
                 "passed": meta["passed"],
                 "total": meta["total"],
                 "failed_ids": [r["id"] for r in results if not r["passed"]],
@@ -44,14 +47,16 @@ def load_runs() -> list[dict]:
 
 def render_table(runs: list[dict]) -> str:
     lines = [
-        "| # | 运行时间 | 结果文件 | 用例集 | 模型 | 通过 | 失败用例 |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| # | 运行时间 | 结果文件 | 用例集 | 模型 | 通过 | 失败用例 | 检索异常用例 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for i, r in enumerate(runs, start=1):
         failed = "、".join(r["failed_ids"]) if r["failed_ids"] else "无"
+        err = r["retrieval_error_ids"]
+        err_text = "未记录" if err is None else ("、".join(err) if err else "无")
         lines.append(
             f"| {i} | {r['time']:%Y-%m-%d %H:%M:%S} | `{r['file']}` | {r['cases_file']} "
-            f"| {r['model']} | {r['passed']}/{r['total']} | {failed} |"
+            f"| {r['model']} | {r['passed']}/{r['total']} | {failed} | {err_text} |"
         )
     return "\n".join(lines)
 

@@ -140,7 +140,8 @@
     hit: '命中',
     not_found: '未找到（全部低于相似度阈值）',
     kb_not_built: '知识库尚未建立',
-    error: '检索失败'
+    error: '检索失败（接口或网络异常）',
+    unknown: '返回格式无法识别'
   };
 
   function el(tag, cls, text) {
@@ -188,8 +189,10 @@
       var item = el('div', 'item');
       var head = el('div');
       head.appendChild(el('span', 'name', '查询：' + r.query));
-      head.appendChild(el('span', 'tag ' + (r.degraded ? 'degraded' : 'ok'),
-        (STATUS_TEXT[r.status] || r.status) + (r.degraded ? ' · 已降级' : ' · 未降级')));
+      // degraded 为 null 表示无法判断（status=unknown），不显示"是否降级"
+      var flag = r.degraded === true ? ' · 已降级' : (r.degraded === false ? ' · 未降级' : '');
+      head.appendChild(el('span', 'tag ' + (r.degraded === false ? 'ok' : 'degraded'),
+        (STATUS_TEXT[r.status] || r.status) + flag));
       item.appendChild(head);
       r.hits.forEach(function (h) {
         var line = el('div');

@@ -120,7 +120,7 @@ node web/markdown.test.js
 
 > `docs/demo.gif` 由作者录制后放入，在此之前上图不显示。演示用的 4 条对话和预期现象见 [docs/demo-script.md](docs/demo-script.md)。
 
-界面所需的检索信息来自 `POST /chat` 响应里新增的 `retrievals` 字段（`query`、`status`、`degraded`、`hits[source, similarity, snippet]`）。它由 `search_knowledge` 的输出文本解析而来（见 `main.py` 的 `parse_retrieval`），原有字段不变；被相似度阈值过滤掉的片段不会出现在其中。
+界面所需的检索信息来自 `POST /chat` 响应里新增的 `retrievals` 字段（`query`、`status`、`degraded`、`hits[source, similarity, snippet]`）。`status` 取值 `hit` / `not_found`（全部低于阈值）/ `kb_not_built` / `error`（检索异常，如 embedding 接口或网络故障）/ `unknown`（输出格式无法识别，此时 `degraded` 为 `null`）。它由 `search_knowledge` 的输出文本解析而来（见 `retrieval_trace.py` 的 `parse_retrieval`），原有字段不变；被相似度阈值过滤掉的片段不会出现在其中。
 
 ## 复现评测
 

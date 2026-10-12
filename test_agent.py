@@ -150,33 +150,112 @@ def test_history_to_messages():
     print("✅ 历史消息正确映射为多轮 messages 数组（user→Human, assistant→AI）")
 
 
-def test_parse_retrieval():
-    """main.parse_retrieval 能还原 rag.search 的命中格式与三种降级文案。"""
-    import rag
-    from main import parse_retrieval
+# ---------- 检索轨迹解析（retrieval_trace.py）：5 种 status 各一个测试 ----------
 
-    # 与 rag.search 命中时的输出格式一致（含多行片段与结尾提示）
-    hit_output = (
-        "从知识库中检索到以下相关片段：\n\n"
-        "[1]（来源: 11-发票政策，相似度 0.62）\n发票政策\n支持电子普通发票和增值税专用发票。\n\n"
-        "[2]（来源: 03-退款流程与时效，相似度 0.31）\n退款流程\n仅退款适用于未收到货。"
-        "\n\n（如果以上片段与用户问题无关，请直接告知用户知识库中没有相关内容，不要编造。）"
-    )
-    r = parse_retrieval("怎么开发票", hit_output)
+HIT_OUTPUT = (
+    "从知识库中检索到以下相关片段：\n\n"
+    "[1]（来源: 11-发票政策，相似度 0.62）\n发票政策\n支持电子普通发票和增值税专用发票。\n\n"
+    "[2]（来源: 03-退款流程与时效，相似度 0.31）\n退款流程\n仅退款适用于未收到货。"
+    "\n\n（如果以上片段与用户问题无关，请直接告知用户知识库中没有相关内容，不要编造。）"
+)
+
+
+def test_retrieval_constants_match_rag():
+    """retrieval_trace 里重复的降级文案必须与 rag.py 一致，否则解析会漂移。"""
+    import rag
+    import retrieval_trace as rt
+
+    assert rt.NOT_FOUND_MSG == rag.NOT_FOUND_MSG
+    assert rt.KB_NOT_BUILT_MSG == rag.KB_NOT_BUILT_MSG
+    # rag.search 的异常分支以 "知识库检索失败：" 开头（见 rag.py 最后一行 return）
+    assert rt.ERROR_PREFIX == "知识库检索失败"
+    print("✅ retrieval_trace 的降级文案与 rag.py 一致")
+
+
+def test_parse_status_hit():
+    from retrieval_trace import parse_retrieval
+
+    r = parse_retrieval("怎么开发票", HIT_OUTPUT)
     assert (r.status, r.degraded, r.query) == ("hit", False, "怎么开发票")
     assert [h.source for h in r.hits] == ["11-发票政策", "03-退款流程与时效"]
     assert [h.similarity for h in r.hits] == [0.62, 0.31]
     assert r.hits[0].snippet == "发票政策\n支持电子普通发票和增值税专用发票。"
     assert "如果以上片段" not in r.hits[1].snippet
+    print("✅ status=hit：来源、相似度、片段（含多行）解析正确")
 
-    for output, status in [
-        (rag.NOT_FOUND_MSG, "not_found"),
-        (rag.KB_NOT_BUILT_MSG, "kb_not_built"),
-        ("知识库检索失败：boom。请告知用户暂时无法查询知识库。", "error"),
+
+def test_parse_status_not_found():
+    import rag
+    from retrieval_trace import parse_retrieval
+
+    r = parse_retrieval("q", rag.NOT_FOUND_MSG)
+    assert (r.status, r.degraded, r.hits) == ("not_found", True, [])
+    print("✅ status=not_found")
+
+
+def test_parse_status_kb_not_built():
+    import rag
+    from retrieval_trace import parse_retrieval
+
+    r = parse_retrieval("q", rag.KB_NOT_BUILT_MSG)
+    assert (r.status, r.degraded, r.hits) == ("kb_not_built", True, [])
+    print("✅ status=kb_not_built")
+
+
+def test_parse_status_error():
+    from retrieval_trace import parse_retrieval
+
+    out = "知识库检索失败：[SSL: UNEXPECTED_EOF_WHILE_READING] EOF。请告知用户暂时无法查询知识库。"
+    r = parse_retrieval("q", out)
+    assert (r.status, r.degraded, r.hits) == ("error", True, [])
+    print("✅ status=error（embedding / 网络异常）")
+
+
+def test_parse_status_unknown():
+    """格式异常：识别不出来记为 unknown，不能默认当 hit，也不下"是否降级"的结论。"""
+    from retrieval_trace import parse_retrieval
+
+    for bad in [
+        "",
+        "一段完全无关的文字",
+        "从知识库中检索到以下相关片段：\n\n（没有任何片段头部）",
+        "[1]（来源: x，相似度 1.2.3）\n内容",  # 分数无法转成 float
     ]:
-        r = parse_retrieval("q", output)
-        assert (r.status, r.degraded, r.hits) == (status, True, [])
-    print("✅ 检索轨迹解析正确：命中（含来源/相似度）与三种降级")
+        r = parse_retrieval("q", bad)
+        assert (r.status, r.degraded, r.hits) == ("unknown", None, []), (bad, r)
+    print("✅ status=unknown：格式异常不会被当作 hit")
+
+
+def test_eval_extract_tool_records():
+    """run_eval 留档：工具返回只存前 500 字符，结构化 retrievals 全存，且只含 search_knowledge。"""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "evals"))
+    import run_eval
+    from langchain_core.messages import ToolMessage
+
+    long_hit = HIT_OUTPUT + "x" * 1000
+    result = {
+        "messages": [
+            HumanMessage(content="q"),
+            AIMessage(content="", tool_calls=[
+                {"name": "query_order", "args": {"order_id": "1"}, "id": "a"},
+                {"name": "search_knowledge", "args": {"query": "发票"}, "id": "b"},
+            ]),
+            ToolMessage(content='{"error": "x"}', tool_call_id="a", name="query_order"),
+            ToolMessage(content=long_hit, tool_call_id="b", name="search_knowledge"),
+            AIMessage(content="done"),
+        ]
+    }
+    outputs, retrievals = run_eval.extract_tool_records(result)
+    assert [o["name"] for o in outputs] == ["query_order", "search_knowledge"]
+    assert len(outputs[1]["output"]) == 500 and outputs[1]["truncated"] is True
+    assert outputs[1]["output_chars"] == len(long_hit)
+    assert outputs[0]["truncated"] is False
+    assert len(retrievals) == 1 and retrievals[0]["status"] == "hit"
+    assert [h["source"] for h in retrievals[0]["hits"]] == ["11-发票政策", "03-退款流程与时效"]
+    counts = run_eval.retrieval_status_counts(retrievals)
+    assert counts == {"hit": 1, "not_found": 0, "kb_not_built": 0, "error": 0, "unknown": 0}
+    print("✅ run_eval 留档：返回原文截断到 500 字符，retrievals 完整")
 
 
 def test_chat_endpoint_and_index():
@@ -218,5 +297,11 @@ if __name__ == "__main__":
     test_full_loop()
     test_history_window_and_order()
     test_history_to_messages()
-    test_parse_retrieval()
+    test_retrieval_constants_match_rag()
+    test_parse_status_hit()
+    test_parse_status_not_found()
+    test_parse_status_kb_not_built()
+    test_parse_status_error()
+    test_parse_status_unknown()
+    test_eval_extract_tool_records()
     test_chat_endpoint_and_index()
