@@ -120,7 +120,15 @@ python evals/run_eval.py boundary     # 只跑某一类
 
 - 需要两个 key：一个 OpenAI 兼容的对话模型 key（报告用的是 `deepseek-v4-flash`），以及一个**智谱开放平台 key**（给 `embedding-3` 用），还要先建好知识库和种子数据。
 - 评测会调用真实模型并产生费用，也会真实写入工单（运行结束会报告新建的 ticket_id）；评测用的会话历史会自动清理。
-- 每次运行的结果保存在 `evals/results/eval_*.json`，最新的报告是 `latest_report.md`。用例定义在 `evals/cases.json`。
+- 每次运行的结果保存在 `evals/results/eval_*.json`，最新的报告是 `latest_report.md`。用例定义在 `evals/cases.json`。`python evals/summarize_results.py` 会把 `results/` 下全部运行记录汇总成表格（[docs/tuning-log.md](docs/tuning-log.md) 末尾的附录就是它生成的）。
+
+## 验证集
+
+上面 23 个用例由作者编写并参与过调优（改过 prompt，也改过一个用例的断言），100% 只能说明调优目标达成。为了看没调优过的问法表现如何，另有一组 10 个**不参与调优**的验证用例：[`evals/holdout_cases.json`](evals/holdout_cases.json)，覆盖退换货、运费、物流异常、发票、保修、订单不存在、知识库里没有答案、缺信息的模糊提问、越权和政策之外的要求。
+
+- 通过率：**待填（由作者运行后填写）**
+- 运行方式：`python evals/run_eval.py --cases evals/holdout_cases.json`（结果文件前缀为 `holdout_cases_`，不覆盖调优集的结果）
+- 使用规则、局限（样本只有 10 个、用例作者读过 prompt 与知识库、关键词断言较宽松）和"若因验证集失败改了 prompt / RAG / 工具，这批用例即降级为调优集"的约定见 [evals/HOLDOUT.md](evals/HOLDOUT.md)。
 
 ## 已知局限与下一步
 
