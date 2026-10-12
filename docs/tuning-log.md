@@ -549,3 +549,26 @@ prompt 之后工具选择有没有退化"这类问题——这正是 V7 要解�
 | 7 | 2026-08-30 20:14:56 | `eval_20260830_201456.json` | 未记录 | deepseek-v4-flash | 22/23 | rag_001 |
 | 8 | 2026-08-30 20:29:22 | `eval_20260830_202922.json` | 未记录 | deepseek-v4-flash | 23/23 | 无 |
 
+
+---
+
+## 附录：deepseek-flash 配置的调优集评测（2026-10-12）
+
+本节为手写记录，数字均取自 `evals/results/eval_20261012_155149.json`。上面的文字记录和脚本生成的表格未做修改；该表格生成于本次运行之前，不含这一次（运行 `python evals/summarize_results.py` 可得到包含本次的完整表格）。
+
+**与历史运行的配置差异**
+
+- 对话模型：本次结果文件的 `meta.model` 为 `deepseek-flash`；上面 8 次历史运行的 `meta.model` 均为 `deepseek-v4-flash`。按作者说明，`deepseek-flash` 是 DeepSeek 接口当前接受的名字。
+- Embedding 模型：按作者说明为 `embedding-3`（`.env` 内容未查看）。
+- 运行环境：Docker 容器，`python --version` 运行前后均为 Python 3.14.8；PostgreSQL 为临时的 `postgres:16-alpine`，种子数据 7 条订单，知识库为 13 篇文档切出的 13 个 chunk（均来自当次 `seed_data.py` / `build_kb.py` 的输出）。
+- 代码、system prompt、`rag.py` 阈值、工具定义和 `evals/cases.json` 与此前一次提交（`602e477`）相同，未做任何调整。
+
+**结果**
+
+- 运行时间 2026-10-12 15:51:49，耗时 76 秒，用例集 `cases.json`，23 个用例。
+- 通过 23/23（100%）：工具选择 6/6、边界拒绝 4/4、多轮记忆 4/4、RAG 检索 4/4、鲁棒性 5/5。没有失败用例。
+- `retrieval_status_counts` 汇总（`search_knowledge` 共 7 次调用）：hit 7，not_found 0，kb_not_built 0，error 0，unknown 0。
+- 没有 `status=error` 的用例，因此按 [evals/HOLDOUT.md](../evals/HOLDOUT.md) 的规则无需重跑，本次没有 `_rerun` 文件。
+- 评测会真实建工单：本次在临时数据库里建了 2 张（订单 12345、9527），随临时数据库一并丢弃。
+
+**说明**：这是一次运行的结果，不是统计结论；历史上同一用例集在 `deepseek-v4-flash` 下也出现过偶发失败（见上文 run#3、run#4 和上方生成表格的第 7 行）。
