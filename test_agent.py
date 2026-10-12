@@ -150,7 +150,73 @@ def test_history_to_messages():
     print("✅ 历史消息正确映射为多轮 messages 数组（user→Human, assistant→AI）")
 
 
+def test_parse_retrieval():
+    """main.parse_retrieval 能还原 rag.search 的命中格式与三种降级文案。"""
+    import rag
+    from main import parse_retrieval
+
+    # 与 rag.search 命中时的输出格式一致（含多行片段与结尾提示）
+    hit_output = (
+        "从知识库中检索到以下相关片段：\n\n"
+        "[1]（来源: 11-发票政策，相似度 0.62）\n发票政策\n支持电子普通发票和增值税专用发票。\n\n"
+        "[2]（来源: 03-退款流程与时效，相似度 0.31）\n退款流程\n仅退款适用于未收到货。"
+        "\n\n（如果以上片段与用户问题无关，请直接告知用户知识库中没有相关内容，不要编造。）"
+    )
+    r = parse_retrieval("怎么开发票", hit_output)
+    assert (r.status, r.degraded, r.query) == ("hit", False, "怎么开发票")
+    assert [h.source for h in r.hits] == ["11-发票政策", "03-退款流程与时效"]
+    assert [h.similarity for h in r.hits] == [0.62, 0.31]
+    assert r.hits[0].snippet == "发票政策\n支持电子普通发票和增值税专用发票。"
+    assert "如果以上片段" not in r.hits[1].snippet
+
+    for output, status in [
+        (rag.NOT_FOUND_MSG, "not_found"),
+        (rag.KB_NOT_BUILT_MSG, "kb_not_built"),
+        ("知识库检索失败：boom。请告知用户暂时无法查询知识库。", "error"),
+    ]:
+        r = parse_retrieval("q", output)
+        assert (r.status, r.degraded, r.hits) == (status, True, [])
+    print("✅ 检索轨迹解析正确：命中（含来源/相似度）与三种降级")
+
+
+def test_chat_endpoint_and_index():
+    """POST /chat 响应带 retrievals 新字段（旧字段不变），GET / 返回演示页。"""
+    import httpx
+
+    import db
+    import main
+
+    main._agent = build_agent(llm=make_scripted_llm())
+
+    async def run():
+        transport = httpx.ASGITransport(app=main.app)
+        sid = f"test-demo-{uuid.uuid4().hex[:8]}"
+        try:
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                chat = await c.post("/chat", json={"message": "查订单9527", "session_id": sid})
+                index = await c.get("/")
+            return chat, index
+        finally:
+            await db.clear_session(sid)
+            main._agent = None
+
+    chat, index = run_async(run())
+    body = chat.json()
+    assert chat.status_code == 200, chat.text
+    assert [t["tool_name"] for t in body["tool_calls"]] == [
+        "query_order", "search_knowledge", "create_ticket",
+    ]
+    # 测试环境没有建知识库，search_knowledge 走"知识库尚未建立"降级
+    assert len(body["retrievals"]) == 1
+    assert body["retrievals"][0]["query"] == "物流长时间不更新"
+    assert body["retrievals"][0]["degraded"] is True
+    assert index.status_code == 200 and "text/html" in index.headers["content-type"]
+    print("✅ /chat 返回 retrievals（降级被标出），GET / 返回演示页")
+
+
 if __name__ == "__main__":
     test_full_loop()
     test_history_window_and_order()
     test_history_to_messages()
+    test_parse_retrieval()
+    test_chat_endpoint_and_index()
