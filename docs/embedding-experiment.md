@@ -101,10 +101,12 @@ python evals/run_eval.py --cases evals/holdout_cases.json --tag zhipu-embedding-
 - 每个配置、每个集合只跑一次，LLM 输出有波动；验证集只有 10 条，单条用例就是 10 个百分点。
 - 评测会真实建工单，只在一个对话模型（DeepSeek）上测过。
 - 校准集的 near 类问题是作者按"知识库里没有"逐条 grep 选出的，不代表真实用户会问的无答案问题的分布。
+- 探测结果文件的 meta 里没有记录 base_url 主机和相似度阈值（探测脚本不经过阈值）；3b-1 是用启动日志 `rag.log_index_status()` 的输出核对的主机和阈值，评测结果 meta 里则有 `similarity_threshold`。
+- (b) 与 (c) 的 T 都是 0.62，原因是两个配置的可回答问题 top-1 最小值接近（embedding-3 为 0.6215，bge-m3 为 0.6209），两者按规则向下取整到 0.01 后都得到 0.62；这不表示两个配置的相似度分布相同。
 
 ## 6. 结果
 
-> 以下全部「待填」。填写时只记录数据，不在本节下"哪个更好"的结论。
+> 以下数据由脚本从结果 JSON 生成，只记录数据，不在本节下结论。
 
 ### 6.1 校准分布与选定阈值（`threshold_probe`，运行于 2026-10-13，代码 `3d2060f`，校准集 `a6f9b1b`）
 
@@ -171,28 +173,97 @@ python evals/run_eval.py --cases evals/holdout_cases.json --tag zhipu-embedding-
 | cal_o07 | keyword | off | 0.4516 | 06-运费规则 | 0.2753 | 11-发票政策 |
 | cal_o08 | keyword | off | 0.4599 | 05-发货时效 | 0.3628 | 05-发货时效 |
 
-### 6.2 评测通过数
+### 6.2 评测通过数（运行于 2026-10-13，代码 `3d2060f`，聊天模型 `deepseek-flash`；6 次完整运行，无重跑）
 
-| 配置 | 调优集（23） | 验证集（10） | 重跑用例（如有） | 结果文件 |
+| 配置 | 数据集 | 通过 | 总数 | 各类别通过数 | 检索状态统计（全部用例合计） | llm_error_ids | retrieval_error_ids | 结果文件 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| (a) embedding-3 @0.25 | 调优集 | 23 | 23 | tool_select 6/6 boundary 4/4 memory 4/4 rag 4/4 robustness 5/5 | hit=7 not_found=0 kb_not_built=0 error=0 unknown=0 | 无 | 无 | `eval_zhipu-embedding-3_t0.25_20261013_041519.json`（报告 `latest_report_zhipu-embedding-3_t0.25.md`） |
+| (a) embedding-3 @0.25 | 验证集 | 10 | 10 | tool_select 1/1 boundary 4/4 rag 5/5 | hit=7 not_found=0 kb_not_built=0 error=0 unknown=0 | 无 | 无 | `holdout_cases_zhipu-embedding-3_t0.25_20261013_041645.json`（报告 `holdout_cases_latest_report_zhipu-embedding-3_t0.25.md`） |
+| (b) embedding-3 @0.62 | 调优集 | 23 | 23 | tool_select 6/6 boundary 4/4 memory 4/4 rag 4/4 robustness 5/5 | hit=7 not_found=0 kb_not_built=0 error=0 unknown=0 | 无 | 无 | `eval_zhipu-embedding-3_t0.62_20261013_041745.json`（报告 `latest_report_zhipu-embedding-3_t0.62.md`） |
+| (b) embedding-3 @0.62 | 验证集 | 10 | 10 | tool_select 1/1 boundary 4/4 rag 5/5 | hit=8 not_found=1 kb_not_built=0 error=0 unknown=0 | 无 | 无 | `holdout_cases_zhipu-embedding-3_t0.62_20261013_041909.json`（报告 `holdout_cases_latest_report_zhipu-embedding-3_t0.62.md`） |
+| (c) bge-m3 @0.62 | 调优集 | 23 | 23 | tool_select 6/6 boundary 4/4 memory 4/4 rag 4/4 robustness 5/5 | hit=7 not_found=0 kb_not_built=0 error=0 unknown=0 | 无 | 无 | `eval_ollama-bge-m3_t0.62_20261013_042016.json`（报告 `latest_report_ollama-bge-m3_t0.62.md`） |
+| (c) bge-m3 @0.62 | 验证集 | 10 | 10 | tool_select 1/1 boundary 4/4 rag 5/5 | hit=7 not_found=3 kb_not_built=0 error=0 unknown=0 | 无 | 无 | `holdout_cases_ollama-bge-m3_t0.62_20261013_042138.json`（报告 `holdout_cases_latest_report_ollama-bge-m3_t0.62.md`） |
+
+同批次对比（通过数，括号内为相对同批次 (a) 的差值）与历史基线：
+
+| 配置 | 调优集（基线 23/23） | 验证集（基线 10/10） |
+| --- | --- | --- |
+| (a) embedding-3 @0.25 | 23/23（相对 (a)：+0；相对历史基线：+0） | 10/10（相对 (a)：+0；相对历史基线：+0） |
+| (b) embedding-3 @0.62 | 23/23（相对 (a)：+0；相对历史基线：+0） | 10/10（相对 (a)：+0；相对历史基线：+0） |
+| (c) bge-m3 @0.62 | 23/23（相对 (a)：+0；相对历史基线：+0） | 10/10（相对 (a)：+0；相对历史基线：+0） |
+
+没有任何用例触发重跑（`retrieval_error_ids`、`retrieval_unknown_ids`、`llm_error_ids` 在 6 次运行中均为空），因此没有重跑文件。
+
+#### 逐用例对照（✓/✗ = 通过/失败；其后是该用例的检索状态，括号内为结果里记录的、阈值过滤后保留的命中片段数；多次检索用 + 连接；未调用检索写“无检索”）
+
+**调优集**
+
+| 用例 | 类别 | (a) @0.25 | (b) @0.62 | (c) bge-m3 @0.62 |
 | --- | --- | --- | --- | --- |
-| (a) embedding-3 @0.25 | 待填 | 待填 | 待填 | 待填 |
-| (b) embedding-3 @T_zhipu | 待填 | 待填 | 待填 | 待填 |
-| (c) bge-m3 @T_bge | 待填 | 待填 | 待填 | 待填 |
-| 历史基线 | 23/23 | 10/10 | — | — |
+| tool_select_001 | tool_select | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| tool_select_002 | tool_select | ✓ hit(3) | ✓ hit(3) | ✓ hit(3) |
+| tool_select_003 | tool_select | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| tool_select_004 | tool_select | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| tool_select_005 | tool_select | ✓ hit(3) | ✓ hit(3) | ✓ hit(1) |
+| tool_select_006 | tool_select | ✓ hit(3) | ✓ hit(1) | ✓ hit(1) |
+| boundary_001 | boundary | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| boundary_002 | boundary | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| boundary_003 | boundary | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| boundary_004 | boundary | ✓ hit(3) | ✓ hit(3) | ✓ hit(3) |
+| memory_001 | memory | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| memory_002 | memory | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| memory_003 | memory | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| memory_004 | memory | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| rag_001 | rag | ✓ hit(3) | ✓ hit(3) | ✓ hit(3) |
+| rag_002 | rag | ✓ hit(3) | ✓ hit(3) | ✓ hit(3) |
+| rag_003 | rag | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| rag_004 | rag | ✓ hit(3) | ✓ hit(1) | ✓ hit(1) |
+| robust_001 | robustness | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| robust_002 | robustness | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| robust_003 | robustness | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| robust_004 | robustness | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| robust_005 | robustness | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
 
-### 6.3 通过数少于 (a) 的用例分析（如有）
+**验证集**
 
-| 配置 | 用例 | 检索变了 / 模型输出波动 | 依据（retrievals / tool_outputs） |
+| 用例 | 类别 | (a) @0.25 | (b) @0.62 | (c) bge-m3 @0.62 |
+| --- | --- | --- | --- | --- |
+| holdout_001 | rag | ✓ hit(3) | ✓ hit(3) | ✓ hit(3) |
+| holdout_002 | rag | ✓ hit(3) | ✓ hit(3) | ✓ hit(2)+hit(3) |
+| holdout_003 | tool_select | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| holdout_004 | rag | ✓ hit(3) | ✓ hit(1) | ✓ hit(1) |
+| holdout_005 | rag | ✓ hit(3) | ✓ hit(1) | ✓ hit(1) |
+| holdout_006 | boundary | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| holdout_007 | rag | ✓ hit(3) | ✓ not_found(0)+hit(2) | ✓ not_found(0)+not_found(0) |
+| holdout_008 | boundary | ✓ 无检索 | ✓ 无检索 | ✓ 无检索 |
+| holdout_009 | boundary | ✓ hit(3) | ✓ hit(3) | ✓ hit(3) |
+| holdout_010 | boundary | ✓ hit(3) | ✓ hit(3)+hit(1) | ✓ hit(1)+not_found(0) |
+
+### 6.3 通过数少于 (a) 的用例分析
+
+(b)、(c) 在调优集和验证集的通过数都与同批次 (a) 相同（均为全部通过），没有“通过数少于 (a)”的用例，本节无需分类。
+
+### 6.4 次要观察（只陈述）
+
+知识库里没有答案的用例（调优集 rag_003 天气、验证集 holdout_007 会员积分）的检索：
+
+| 用例 | (a) @0.25 | (b) @0.62 | (c) bge-m3 @0.62 |
 | --- | --- | --- | --- |
-| 待填 | | | |
+| rag_003 | 无检索 | 无检索 | 无检索 |
+| holdout_007 | query「会员积分 积分能否抵现金使用 积分规则」→ hit：11-发票政策 0.61、13-价保规则 0.61、01-退货政策总则 0.6 | query「会员积分 积分能否抵现金使用」→ not_found：无片段；query「会员积分规则 抵现 优惠政策」→ hit：13-价保规则 0.64、06-运费规则 0.63 | query「会员积分 积分抵现金 积分使用规则」→ not_found：无片段；query「会员积分制度 积分兑换 抵扣」→ not_found：无片段 |
 
-### 6.4 次要观察
+可回答的 rag 用例（category=rag，不含上面两条）在三个配置下的检索状态与保留的片段数（过滤前的片段数、被阈值过滤掉的个数在结果里**未记录**，不推算）：
 
-| 项目 | (a) | (b) | (c) |
+| 用例 | (a) @0.25 | (b) @0.62 | (c) bge-m3 @0.62 |
 | --- | --- | --- | --- |
-| holdout_007 的检索状态 | 待填 | 待填 | 待填 |
-| 可回答 rag 用例仍为 hit 的数量 | 待填 | 待填 | 待填 |
-| 次要片段被阈值过滤的个数 | 待填 | 待填 | 待填 |
+| rag_001 | hit(3) | hit(3) | hit(3) |
+| rag_002 | hit(3) | hit(3) | hit(3) |
+| rag_004 | hit(3) | hit(1) | hit(1) |
+| holdout_001 | hit(3) | hit(3) | hit(3) |
+| holdout_002 | hit(3) | hit(3) | hit(2)+hit(3) |
+| holdout_004 | hit(3) | hit(1) | hit(1) |
+| holdout_005 | hit(3) | hit(1) | hit(1) |
+
 
 ## 修订记录
 
