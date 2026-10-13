@@ -7,7 +7,7 @@ V7 自动化评测运行器：对 Agent 的工具选择、边界行为、多轮�
     python evals/run_eval.py boundary       # 只跑某一类（传类别名）
     python evals/run_eval.py --cases evals/holdout_cases.json   # 跑验证集（结果文件以 holdout_cases_ 开头）
     python evals/run_eval.py --cases evals/holdout_cases.json --ids holdout_002,holdout_004   # 只重跑指定用例
-    python evals/run_eval.py --tag ollama-bge-m3_t0.60   # 结果 / 报告文件名带标签，不覆盖 latest 报告
+    python evals/run_eval.py --tag ollama-bge-m3_t0.60   # 结果 / 报告文件名带标签，不覆盖 latest 报告（rerun 是保留字）
 
 设计说明：
 - 不走 HTTP、不起 uvicorn：直接 build_agent() 调用，多轮编排逻辑复用
@@ -213,6 +213,19 @@ async def run_case(agent, case: dict, run_id: str) -> dict:
     }
 
 
+def validate_tag(tag: str) -> str | None:
+    """--tag 合法返回 None，否则返回原因。
+
+    rerun（或以 _rerun 结尾）是保留字：--ids 重跑的结果 / 报告文件名里已经有 _rerun，
+    允许它当标签会让两种文件撞名、互相覆盖。
+    """
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", tag):
+        return f"--tag 只允许字母、数字、. _ -：{tag!r}"
+    if re.search(r"(^|_)rerun$", tag, re.IGNORECASE):
+        return f"--tag 不能是保留字 rerun（也不能以 _rerun 结尾），会与 --ids 重跑的结果 / 报告文件名冲突：{tag!r}"
+    return None
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Agent 自动化评测")
     parser.add_argument("category", nargs="?", help="只跑某一类用例（类别名）")
@@ -232,8 +245,9 @@ async def main():
         "带标签时报告写到 <报告名>_<标签>.md，不覆盖已提交的 latest 报告",
     )
     args = parser.parse_args()
-    if args.tag and not re.fullmatch(r"[A-Za-z0-9._-]+", args.tag):
-        print(f"--tag 只允许字母、数字、. _ -：{args.tag!r}")
+    tag_problem = validate_tag(args.tag) if args.tag else None
+    if tag_problem:
+        print(tag_problem)
         sys.exit(1)
     category_filter = args.category
     id_filter = [i.strip() for i in args.ids.split(",") if i.strip()] if args.ids else None

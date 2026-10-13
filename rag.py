@@ -28,7 +28,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 import chromadb
 import httpx
@@ -96,6 +96,19 @@ def load_embedding_config(env) -> EmbeddingConfig:
         # Ollama 不回退到 LLM_BASE_URL：那是对话模型的地址，不是 Ollama
         base_url = env.get("EMBEDDING_BASE_URL") or OLLAMA_DEFAULT_BASE_URL
         api_key = None
+    if provider == "ollama":
+        # 典型误配：只把 PROVIDER 改成 ollama，模型名 / 地址还是智谱的。只告警，不抛错、不改值
+        if model.strip().lower() == "embedding-3":
+            logger.warning(
+                "EMBEDDING_PROVIDER=ollama 但 EMBEDDING_MODEL_NAME=%s（智谱的模型名）；"
+                "切换 provider 时 EMBEDDING_PROVIDER / EMBEDDING_MODEL_NAME / EMBEDDING_BASE_URL 要一起改", model,
+            )
+        base_host = (urlsplit(base_url).hostname or "").lower()
+        if "bigmodel" in base_host:
+            logger.warning(
+                "EMBEDDING_PROVIDER=ollama 但 EMBEDDING_BASE_URL 指向智谱（%s）；"
+                "切换 provider 时 EMBEDDING_PROVIDER / EMBEDDING_MODEL_NAME / EMBEDDING_BASE_URL 要一起改", base_host,
+            )
     try:
         # 智谱 embedding-3 支持的输出维度：256 / 512 / 1024 / 2048，默认 1024。
         # 维度越小存储和计算越省，1024 是召回精度和成本的平衡点。
@@ -228,9 +241,12 @@ def chunk_text(text: str, chunk_size: int = CHUNK_SIZE, overlap: int = CHUNK_OVE
 # 重试策略：只重试"连接 / 传输层"的瞬时故障（ConnectError、ReadError、RemoteProtocolError、
 # ConnectTimeout 等，SSL: UNEXPECTED_EOF_WHILE_READING 就落在 ConnectError / ReadError 里）。
 # 读超时 / 写超时 / 连接池超时不重试：对端慢时再等 3 轮只会把一次检索拖到几分钟。
+# UnsupportedProtocol（base_url 漏写 http:// 之类）和 LocalProtocolError 是确定性的配置 / 请求错误，重试只会白等。
 # HTTP 4xx / 5xx 也不重试：那是请求或服务端的问题（key 错、模型名错、模型没 pull），重试没有意义。
 RETRY_DELAYS = (1.0, 3.0)  # 第 1、2 次失败后的等待秒数 → 最多 3 次尝试
-_NO_RETRY_ERRORS = (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)
+_TIMEOUT_ERRORS = (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout)
+_DETERMINISTIC_ERRORS = (httpx.UnsupportedProtocol, httpx.LocalProtocolError)
+_NO_RETRY_ERRORS = _TIMEOUT_ERRORS + _DETERMINISTIC_ERRORS
 # 测试注入点：_TRANSPORT 换成 httpx.MockTransport，_sleep 换成不真等的函数
 _TRANSPORT: httpx.BaseTransport | None = None
 _sleep = time.sleep
@@ -245,8 +261,16 @@ def _require_config() -> EmbeddingConfig:
 
 
 def _host(url: str) -> str:
-    """日志里只记 base_url 的主机部分。"""
-    return urlsplit(url).netloc or url
+    """日志里只记 base_url 的 host[:port]，不带 user:pass@（解析不出主机时返回 ?，不回显原串）。"""
+    return urlsplit(url).netloc.rpartition("@")[2] or "?"
+
+
+def _safe_base_url(url: str) -> str:
+    """报错文案里的 base_url：去掉 userinfo，其余原样（没有 userinfo 时与原串完全相同）。"""
+    parts = urlsplit(url)
+    if "@" not in parts.netloc:
+        return url
+    return urlunsplit((parts.scheme, parts.netloc.rpartition("@")[2], parts.path, parts.query, parts.fragment))
 
 
 def _post_json(url: str, payload: dict, headers: dict, stage: str, cfg: EmbeddingConfig) -> dict:
@@ -275,7 +299,12 @@ def _post_json(url: str, payload: dict, headers: dict, stage: str, cfg: Embeddin
                 logger.warning("embedding 请求失败，%.0fs 后重试（%s）", delay, detail)
                 _sleep(delay)
                 continue
-            reason = "重试次数用尽" if retryable else "超时类错误不重试"
+            if retryable:
+                reason = "重试次数用尽"
+            elif isinstance(e, _TIMEOUT_ERRORS):
+                reason = "超时类错误不重试"
+            else:
+                reason = "配置 / 协议类错误不重试"
             logger.error("embedding 请求失败，放弃：%s（%s）", reason, detail)
             raise
         if resp.status_code != 200:
@@ -285,7 +314,7 @@ def _post_json(url: str, payload: dict, headers: dict, stage: str, cfg: Embeddin
             )
             raise RuntimeError(
                 f"embedding 接口返回 {resp.status_code}（model={cfg.model}，"
-                f"base_url={cfg.base_url}）：{resp.text[:300]}"
+                f"base_url={_safe_base_url(cfg.base_url)}）：{resp.text[:300]}"
             )
         return resp.json()
     raise AssertionError("unreachable")  # pragma: no cover
@@ -365,6 +394,36 @@ META_DIMENSION = "embedding_dimension"
 REBUILD_HINT = "需要重建：python scripts/build_kb.py --rebuild"
 
 _legacy_warned = False
+# 旧库（无元数据）的维度读取结果缓存：(集合对象, 维度)。按对象身份命中，重建出新集合后自然失效。
+_legacy_dim_cache: tuple | None = None
+# search 里已经记过 ERROR 的不一致原因：同一原因只记一次，避免每次检索都刷屏
+_logged_search_errors: set[str] = set()
+_META_KEYS = (META_PROVIDER, META_MODEL, META_DIMENSION)
+
+
+def _reset_index_caches() -> None:
+    """清掉上面两个进程内缓存（重建向量库后、以及测试里使用）。"""
+    global _legacy_dim_cache, _logged_search_errors
+    _legacy_dim_cache = None
+    _logged_search_errors = set()
+
+
+def _is_legacy_meta(meta) -> bool:
+    """三个 embedding 键一个都没有 = 引入一致性校验之前建的旧库；只有其中一部分则是残缺元数据，不算旧库。"""
+    return not any(k in meta for k in _META_KEYS)
+
+
+def _metadata_problem(meta) -> str | None:
+    """元数据残缺或类型异常时返回原因，正常返回 None。dimension 必须是 int（bool / float / str / None 都不行）。"""
+    missing = [k for k in _META_KEYS if k not in meta]
+    if missing:
+        return "缺少 " + " / ".join(missing)
+    for key in (META_PROVIDER, META_MODEL):
+        if not isinstance(meta[key], str) or not meta[key]:
+            return f"{key} 应为非空字符串，实际为 {meta[key]!r}"
+    if type(meta[META_DIMENSION]) is not int:
+        return f"{META_DIMENSION} 应为整数，实际为 {type(meta[META_DIMENSION]).__name__} {meta[META_DIMENSION]!r}"
+    return None
 
 
 def index_metadata(cfg: EmbeddingConfig, dimension: int) -> dict:
@@ -384,6 +443,18 @@ def _stored_dimension(collection) -> int | None:
     return len(embeddings[0])
 
 
+def _legacy_stored_dimension(collection) -> int | None:
+    """旧库的向量维度；同一个集合对象只读一次（读不到——空集合——不缓存）。"""
+    global _legacy_dim_cache
+    cached = _legacy_dim_cache
+    if cached is not None and cached[0] is collection:
+        return cached[1]
+    dim = _stored_dimension(collection)
+    if dim is not None:
+        _legacy_dim_cache = (collection, dim)
+    return dim
+
+
 def _mismatch_text(stored, cfg: EmbeddingConfig, query_dim: int | None = None) -> str:
     current = f"{cfg.provider}/{cfg.model}/{query_dim}" if query_dim is not None else cfg.describe()
     return (
@@ -397,11 +468,14 @@ def _index_signature(collection, cfg: EmbeddingConfig) -> tuple:
 
     没有元数据的旧库（引入本校验之前建的）：只有当前配置正是旧版默认的 zhipu/embedding-3/1024、
     且库里向量确实是 1024 维时才放行（写一次 WARNING 建议重建），其余情况一律按不一致处理。
+    元数据残缺（缺键）或 dimension 不是 int：按不一致处理。
+    zhipu 的请求维度就是配置里的维度，所以 zhipu 下库内记录的维度必须等于 cfg.dimensions（不需要先拿到查询向量）；
+    ollama 的维度由模型决定，要等拿到真实向量后由 _check_query_dim 比较。
     """
     global _legacy_warned
     meta = collection.metadata or {}
-    if META_PROVIDER not in meta:
-        stored_dim = _stored_dimension(collection)
+    if _is_legacy_meta(meta):
+        stored_dim = _legacy_stored_dimension(collection)
         if (cfg.provider, cfg.model, cfg.dimensions) != LEGACY_DEFAULT or stored_dim != LEGACY_DEFAULT[2]:
             raise IndexMismatchError(
                 f"向量库没有记录建库时的 embedding 配置（旧版建的库，向量维度 {stored_dim}），"
@@ -414,8 +488,16 @@ def _index_signature(collection, cfg: EmbeddingConfig) -> tuple:
             )
             _legacy_warned = True
         return LEGACY_DEFAULT
-    stored = (meta.get(META_PROVIDER), meta.get(META_MODEL), meta.get(META_DIMENSION))
+    problem = _metadata_problem(meta)
+    if problem:
+        raise IndexMismatchError(
+            f"向量库的 embedding 元数据不完整或格式异常（{problem}），"
+            f"无法确认与当前配置 {cfg.describe()} 一致。{REBUILD_HINT}"
+        )
+    stored = (meta[META_PROVIDER], meta[META_MODEL], meta[META_DIMENSION])
     if (stored[0], stored[1]) != (cfg.provider, cfg.model):
+        raise IndexMismatchError(_mismatch_text(stored, cfg))
+    if cfg.provider == "zhipu" and stored[2] != cfg.dimensions:
         raise IndexMismatchError(_mismatch_text(stored, cfg))
     return stored
 
@@ -428,8 +510,8 @@ def _check_query_dim(stored, cfg: EmbeddingConfig, query_dim: int) -> None:
 def check_index(collection, cfg: EmbeddingConfig, query_dim: int | None = None) -> str | None:
     """一致返回 None，不一致返回原因（供建库 / 启动日志 / 测试使用）。
 
-    query_dim 为 None 时只比较 provider / model（以及旧库规则）；
-    维度要等拿到一条真实向量后才能比较（Ollama 的维度由模型决定，配置里没有）。
+    query_dim 为 None 时比较 provider / model、元数据完整性、旧库规则，以及 zhipu 的配置维度；
+    ollama 的维度要等拿到一条真实向量后才能比较（由模型决定，配置里没有）。
     """
     try:
         stored = _index_signature(collection, cfg)
@@ -446,9 +528,9 @@ def index_info() -> dict | None:
         meta = get_collection().metadata or {}
     except Exception:  # noqa: BLE001 只用于留档
         return None
-    if META_PROVIDER not in meta:
+    if _is_legacy_meta(meta):
         return None
-    return {k: meta.get(k) for k in (META_PROVIDER, META_MODEL, META_DIMENSION)}
+    return {k: meta.get(k) for k in _META_KEYS}
 
 
 def log_index_status() -> str:
@@ -465,7 +547,7 @@ def log_index_status() -> str:
         if count == 0:
             logger.warning("知识库尚未建立（当前 embedding 配置 %s）", CONFIG.describe())
             return "kb_not_built"
-        legacy = META_PROVIDER not in (collection.metadata or {})
+        legacy = _is_legacy_meta(collection.metadata or {})
         problem = check_index(collection, CONFIG)
     except Exception as e:  # noqa: BLE001 启动日志不能拖垮启动
         logger.error("检查向量库状态失败：%s: %s", type(e).__name__, e)
@@ -534,6 +616,7 @@ def build_knowledge_base(rebuild: bool = False) -> dict:
     _collection_cache = None
     collection = client.create_collection(name=COLLECTION_NAME, metadata=index_metadata(cfg, dimension))
     _collection_cache = collection
+    _reset_index_caches()  # 新集合：旧库维度缓存和"已记过的不一致原因"都作废
 
     # 批量写入。id 用 文件名::序号，既唯一又便于人工排查。
     collection.add(
@@ -596,6 +679,7 @@ def search(query: str, top_k: int = 3) -> str:
             + "\n\n（如果以上片段与用户问题无关，请直接告知用户知识库中没有相关内容，不要编造。）"
         )
     except Exception as e:  # noqa: BLE001 检索失败不能拖垮整个 Agent 链路
-        if isinstance(e, (IndexMismatchError, EmbeddingConfigError)):
+        if isinstance(e, (IndexMismatchError, EmbeddingConfigError)) and str(e) not in _logged_search_errors:
+            _logged_search_errors.add(str(e))  # 同一原因只记一次，之后的检索照常返回失败文案但不再刷日志
             logger.error("知识库检索失败：%s", e)
         return f"知识库检索失败：{e}。请告知用户暂时无法查询知识库。"

@@ -17,6 +17,8 @@ A = 可回答问题的 top-1 相似度，U = 无答案问题的 top-1 相似度�
 - 可分（max U < min A）：T = 两者中点，四舍五入到 0.01；若取整后不再严格分开
   （不满足 max U < T <= min A），改为保留 4 位小数。
 - 不可分：T = min A 向下取整到 0.01，即保住全部可回答问题、尽量多过滤无答案问题。
+算出 T 后兜底校验：可分时保证 max U < T <= min A，不可分时保证 T <= min A，否则退回 T = min A（浮点进位、间隔极小）。
+校准集缺任何一类问题、或校准集文件不存在时，打印提示并以非零码退出。
 T 是在校准集内拟合出来的；保留率 / 过滤率只是对拟合结果的描述，不是独立的验证。
 rag.search 按"相似度 < T 丢弃"逐个片段过滤，所以无答案问题被判为 not_found 当且仅当 top-1 < T。
 """
@@ -55,7 +57,7 @@ def describe(values: list[float]) -> dict:
 def choose_threshold(answerable: list[float], unanswerable: list[float]) -> dict:
     """按模块说明里的规则选阈值，返回 {threshold, separable, rule}。"""
     if not answerable or not unanswerable:
-        raise ValueError("两类问题都至少需要 1 条")
+        raise ValueError(f"两类问题都至少需要 1 条（可回答 {len(answerable)} 条，无答案 {len(unanswerable)} 条）")
     min_a, max_u = min(answerable), max(unanswerable)
     if max_u < min_a:
         mid = (max_u + min_a) / 2
@@ -64,10 +66,17 @@ def choose_threshold(answerable: list[float], unanswerable: list[float]) -> dict
         if not (max_u < t <= min_a):
             t = round(mid, 4)
             rule = "可分：取中点（取整到 0.01 后不再严格分开，改为保留 4 位小数）"
+        if not (max_u < t <= min_a):  # 间隔小到 4 位小数也分不开：直接取 min A（仍然 > max U）
+            t = min_a
+            rule = "可分：间隔过小，取整后无法严格分开，取 min A"
         return {"threshold": t, "separable": True, "rule": rule}
-    # round(…, 6) 去掉浮点误差（如 0.63 * 100 = 62.99999…），保证 T <= min A
+    # round(…, 6) 去掉浮点误差（如 0.63 * 100 = 62.99999…）
     t = math.floor(round(min_a * 100, 6)) / 100
-    return {"threshold": t, "separable": False, "rule": "不可分：min A 向下取整到 0.01（保住全部可回答问题）"}
+    rule = "不可分：min A 向下取整到 0.01（保住全部可回答问题）"
+    if t > min_a:  # round(…, 6) 在边界上会向上进位（如 0.629999996 → 0.63），兜底：取 min A 本身
+        t = min_a
+        rule = "不可分：向下取整因浮点进位超过 min A，改取 min A（保住全部可回答问题）"
+    return {"threshold": t, "separable": False, "rule": rule}
 
 
 def rate(values: list[float], pred) -> dict:
@@ -139,12 +148,24 @@ def main():
     args = parser.parse_args()
     rag.configure_logging()
 
-    with open(args.probe, "rb") as f:
-        raw = f.read()
+    try:
+        with open(args.probe, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        print(f"[校准中止] 找不到校准集：{args.probe}")
+        sys.exit(2)
     cases = json.loads(raw.decode("utf-8"))["cases"]
     validate_cases(cases, {d["source"] for d in rag.load_documents()})
+    n_answerable = sum(1 for c in cases if c["kind"] == "answerable")
+    if n_answerable == 0 or n_answerable == len(cases):
+        print(f"[校准中止] 校准集里两类问题都至少需要 1 条（可回答 {n_answerable} 条，无答案 {len(cases) - n_answerable} 条）")
+        sys.exit(2)
 
-    cfg = rag._require_config()  # noqa: SLF001
+    try:
+        cfg = rag._require_config()  # noqa: SLF001
+    except rag.EmbeddingConfigError as e:
+        print(f"[校准中止] {e}")
+        sys.exit(1)
     collection = rag.get_collection()
     count = collection.count()
     if count == 0:

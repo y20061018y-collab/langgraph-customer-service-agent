@@ -115,7 +115,11 @@ uvicorn main:app --reload
 - `scripts/build_kb.py` 不会跳过，而是报错退出，要求加 `--rebuild`；
 - 服务启动时日志里会写出不一致（`[rag]` 开头的日志行）。
 
-旧版本建的库没有这些元数据：只有当前配置是默认的 zhipu / embedding-3 / 1024，并且库里的向量确实是 1024 维时才继续使用，同时写一条 WARNING 建议重建；其他情况一律按不一致处理。
+旧版本建的库没有这些元数据：只有当前配置是默认的 zhipu / embedding-3 / 1024，并且库里的向量确实是 1024 维时才继续使用，同时写一条 WARNING 建议重建；其他情况一律按不一致处理。旧库没有元数据，无法区分同为 1024 维的其他模型，如果曾经改过 `EMBEDDING_MODEL_NAME`，请 `--rebuild`。
+
+元数据缺项（三个键缺任何一个）或维度不是整数，同样按不一致处理。zhipu 下库里记录的维度还会和 `EMBEDDING_DIMENSIONS` 比较（只改了维度也会被发现）；ollama 的维度由模型决定，拿到查询向量后再比较。
+
+切换 provider 时 `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL_NAME` / `EMBEDDING_BASE_URL` 三项要一起改：provider 是 ollama 却仍是 `embedding-3` 或智谱地址时，启动日志会有 WARNING（只告警，不改值）。
 
 **切换提供方**（本地运行）：
 
@@ -137,7 +141,7 @@ docker compose exec app python scripts/build_kb.py --rebuild
 
 也可以只删掉向量卷，让容器启动时重新建库：先 `docker compose down`，再 `docker volume rm <项目名>_chroma_data`，最后 `docker compose up`。⚠️ 不要为了这个用 `docker compose down -v`：它会把 `pgdata` 卷也删掉，订单、工单和会话记录都会丢失。启动时 seed 会重新灌入订单，但工单和会话不会恢复。
 
-**重试与日志**：embedding 请求遇到连接类错误（`ConnectError`、`ReadError`、`RemoteProtocolError`、`ConnectTimeout` 等，`SSL: UNEXPECTED_EOF_WHILE_READING` 就属于这一类）时最多尝试 3 次，第 1、2 次失败后分别等 1 秒、3 秒。读超时、写超时和 HTTP 4xx/5xx 不重试。每次失败都会写日志，记录阶段（`build` / `search`）、第几次、异常类型和已耗时，不记录 key 和请求头。退避总共只有约 4 秒，挡得住偶发的单次断连；如果故障持续几十秒以上，3 次尝试会全部落在故障期内，重试不起作用。日志的作用是把这类故障的类型和时间记下来，方便定位。
+**重试与日志**：embedding 请求遇到连接类错误（`ConnectError`、`ReadError`、`RemoteProtocolError`、`ConnectTimeout` 等，`SSL: UNEXPECTED_EOF_WHILE_READING` 就属于这一类）时最多尝试 3 次，第 1、2 次失败后分别等 1 秒、3 秒。读超时、写超时、连接池超时、HTTP 4xx/5xx，以及 `UnsupportedProtocol`（`base_url` 漏写 `http://`）、`LocalProtocolError` 这类确定性的配置错误不重试。每次失败都会写日志，记录阶段（`build` / `search`）、第几次、异常类型和已耗时，不记录 key 和请求头，主机只记 `host[:port]`（不带 `user:pass@`）；同一个向量库不一致的原因，`search()` 只记一次 ERROR，不会每次检索都刷屏。退避总共只有约 4 秒，挡得住偶发的单次断连；如果故障持续几十秒以上，3 次尝试会全部落在故障期内，重试不起作用。日志的作用是把这类故障的类型和时间记下来，方便定位。
 
 ### 离线测试（不需要 API key）
 
