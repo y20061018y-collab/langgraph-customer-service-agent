@@ -1,0 +1,906 @@
+{
+  "meta": {
+    "time": "20261013_041134",
+    "embedding_provider": "zhipu",
+    "embedding_model": "embedding-3",
+    "embedding_index": {
+      "embedding_provider": "zhipu",
+      "embedding_model": "embedding-3",
+      "embedding_dimension": 1024
+    },
+    "query_dimension": 1024,
+    "chunks": 13,
+    "top_k": 3,
+    "probe_file": "threshold_probe.json",
+    "probe_sha256": "2997cc4f5e71554fb9f60c0d28901b2bf3c2474c2975e4c86a824a8d92d416c2",
+    "cases": 32
+  },
+  "summary": {
+    "threshold": 0.62,
+    "separable": false,
+    "rule": "不可分：min A 向下取整到 0.01（保住全部可回答问题）",
+    "distributions": {
+      "answerable": {
+        "n": 16,
+        "min": 0.6215,
+        "median": 0.7331,
+        "max": 0.8087
+      },
+      "unanswerable": {
+        "n": 16,
+        "min": 0.3143,
+        "median": 0.4821,
+        "max": 0.6729
+      },
+      "unanswerable_near": {
+        "n": 8,
+        "min": 0.49,
+        "median": 0.5976,
+        "max": 0.6729
+      },
+      "unanswerable_off": {
+        "n": 8,
+        "min": 0.3143,
+        "median": 0.4552,
+        "max": 0.4742
+      },
+      "answerable_natural": {
+        "n": 8,
+        "min": 0.6215,
+        "median": 0.6647,
+        "max": 0.7567
+      },
+      "unanswerable_natural": {
+        "n": 8,
+        "min": 0.3143,
+        "median": 0.4821,
+        "max": 0.59
+      },
+      "answerable_keyword": {
+        "n": 8,
+        "min": 0.727,
+        "median": 0.7639,
+        "max": 0.8087
+      },
+      "unanswerable_keyword": {
+        "n": 8,
+        "min": 0.4516,
+        "median": 0.5326,
+        "max": 0.6729
+      }
+    },
+    "at_threshold": {
+      "answerable_kept": {
+        "count": 16,
+        "n": 16,
+        "rate": 1.0
+      },
+      "unanswerable_near_filtered": {
+        "count": 6,
+        "n": 8,
+        "rate": 0.75
+      },
+      "unanswerable_off_filtered": {
+        "count": 8,
+        "n": 8,
+        "rate": 1.0
+      },
+      "unanswerable_filtered": {
+        "count": 14,
+        "n": 16,
+        "rate": 0.875
+      },
+      "answerable_natural_kept": {
+        "count": 8,
+        "n": 8,
+        "rate": 1.0
+      },
+      "unanswerable_natural_filtered": {
+        "count": 8,
+        "n": 8,
+        "rate": 1.0
+      },
+      "answerable_keyword_kept": {
+        "count": 8,
+        "n": 8,
+        "rate": 1.0
+      },
+      "unanswerable_keyword_filtered": {
+        "count": 6,
+        "n": 8,
+        "rate": 0.75
+      }
+    },
+    "answerable_top1_correct": {
+      "count": 16,
+      "n": 16,
+      "rate": 1.0
+    }
+  },
+  "results": [
+    {
+      "id": "cal_a01",
+      "kind": "answerable",
+      "style": "natural",
+      "query": "我想退货，应该在 APP 的哪个页面提交申请？",
+      "expected_source": "01-退货政策总则",
+      "hits": [
+        {
+          "source": "01-退货政策总则",
+          "similarity": 0.6636
+        },
+        {
+          "source": "08-换货流程",
+          "similarity": 0.6126
+        },
+        {
+          "source": "07-物流异常处理",
+          "similarity": 0.605
+        }
+      ],
+      "top1_similarity": 0.6636,
+      "top1_source": "01-退货政策总则",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a02",
+      "kind": "answerable",
+      "style": "natural",
+      "query": "七天无理由的期限是从下单那天算，还是从收到货那天算？",
+      "expected_source": "02-七天无理由退货",
+      "hits": [
+        {
+          "source": "02-七天无理由退货",
+          "similarity": 0.7355
+        },
+        {
+          "source": "01-退货政策总则",
+          "similarity": 0.6731
+        },
+        {
+          "source": "05-发货时效",
+          "similarity": 0.6616
+        }
+      ],
+      "top1_similarity": 0.7355,
+      "top1_source": "02-七天无理由退货",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a03",
+      "kind": "answerable",
+      "style": "natural",
+      "query": "退货寄回去以后，钱大概什么时候能退到我的银行卡上？",
+      "expected_source": "03-退款流程与时效",
+      "hits": [
+        {
+          "source": "03-退款流程与时效",
+          "similarity": 0.7567
+        },
+        {
+          "source": "01-退货政策总则",
+          "similarity": 0.639
+        },
+        {
+          "source": "11-发票政策",
+          "similarity": 0.6176
+        }
+      ],
+      "top1_similarity": 0.7567,
+      "top1_source": "03-退款流程与时效",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a04",
+      "kind": "answerable",
+      "style": "natural",
+      "query": "我寄回商品的时候选了到付，商家会收吗？",
+      "expected_source": "04-退货运费规则",
+      "hits": [
+        {
+          "source": "04-退货运费规则",
+          "similarity": 0.6659
+        },
+        {
+          "source": "06-运费规则",
+          "similarity": 0.6067
+        },
+        {
+          "source": "12-签收与验货",
+          "similarity": 0.5718
+        }
+      ],
+      "top1_similarity": 0.6659,
+      "top1_source": "04-退货运费规则",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a05",
+      "kind": "answerable",
+      "style": "natural",
+      "query": "下单已经三天了还没发货，我能要求赔偿吗？",
+      "expected_source": "05-发货时效",
+      "hits": [
+        {
+          "source": "05-发货时效",
+          "similarity": 0.6349
+        },
+        {
+          "source": "02-七天无理由退货",
+          "similarity": 0.5575
+        },
+        {
+          "source": "08-换货流程",
+          "similarity": 0.5508
+        }
+      ],
+      "top1_similarity": 0.6349,
+      "top1_source": "05-发货时效",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a06",
+      "kind": "answerable",
+      "style": "natural",
+      "query": "快递显示已经签收了，可我根本没收到，这种情况怎么处理？",
+      "expected_source": "07-物流异常处理",
+      "hits": [
+        {
+          "source": "07-物流异常处理",
+          "similarity": 0.6561
+        },
+        {
+          "source": "12-签收与验货",
+          "similarity": 0.5903
+        },
+        {
+          "source": "05-发货时效",
+          "similarity": 0.5787
+        }
+      ],
+      "top1_similarity": 0.6561,
+      "top1_source": "07-物流异常处理",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a07",
+      "kind": "answerable",
+      "style": "natural",
+      "query": "东西有质量问题的话，商家一般会怎么赔我？",
+      "expected_source": "10-质量问题处理",
+      "hits": [
+        {
+          "source": "10-质量问题处理",
+          "similarity": 0.7033
+        },
+        {
+          "source": "08-换货流程",
+          "similarity": 0.6378
+        },
+        {
+          "source": "09-保修条款",
+          "similarity": 0.6353
+        }
+      ],
+      "top1_similarity": 0.7033,
+      "top1_source": "10-质量问题处理",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a08",
+      "kind": "answerable",
+      "style": "natural",
+      "query": "刚买完第二天就降价了，能把差价补给我吗？",
+      "expected_source": "13-价保规则",
+      "hits": [
+        {
+          "source": "13-价保规则",
+          "similarity": 0.6215
+        },
+        {
+          "source": "08-换货流程",
+          "similarity": 0.5847
+        },
+        {
+          "source": "01-退货政策总则",
+          "similarity": 0.5731
+        }
+      ],
+      "top1_similarity": 0.6215,
+      "top1_source": "13-价保规则",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a09",
+      "kind": "answerable",
+      "style": "keyword",
+      "query": "生鲜商品 冷链运费 收费标准",
+      "expected_source": "06-运费规则",
+      "hits": [
+        {
+          "source": "06-运费规则",
+          "similarity": 0.7307
+        },
+        {
+          "source": "12-签收与验货",
+          "similarity": 0.5745
+        },
+        {
+          "source": "04-退货运费规则",
+          "similarity": 0.5668
+        }
+      ],
+      "top1_similarity": 0.7307,
+      "top1_source": "06-运费规则",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a10",
+      "kind": "answerable",
+      "style": "keyword",
+      "query": "换货 运费 非质量问题 谁承担",
+      "expected_source": "08-换货流程",
+      "hits": [
+        {
+          "source": "08-换货流程",
+          "similarity": 0.7838
+        },
+        {
+          "source": "04-退货运费规则",
+          "similarity": 0.7267
+        },
+        {
+          "source": "10-质量问题处理",
+          "similarity": 0.725
+        }
+      ],
+      "top1_similarity": 0.7838,
+      "top1_source": "08-换货流程",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a11",
+      "kind": "answerable",
+      "style": "keyword",
+      "query": "进水 人为损坏 是否免费保修",
+      "expected_source": "09-保修条款",
+      "hits": [
+        {
+          "source": "09-保修条款",
+          "similarity": 0.7708
+        },
+        {
+          "source": "10-质量问题处理",
+          "similarity": 0.6546
+        },
+        {
+          "source": "08-换货流程",
+          "similarity": 0.6245
+        }
+      ],
+      "top1_similarity": 0.7708,
+      "top1_source": "09-保修条款",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a12",
+      "kind": "answerable",
+      "style": "keyword",
+      "query": "电子发票 多久收到 发送邮箱",
+      "expected_source": "11-发票政策",
+      "hits": [
+        {
+          "source": "11-发票政策",
+          "similarity": 0.7398
+        },
+        {
+          "source": "05-发货时效",
+          "similarity": 0.6516
+        },
+        {
+          "source": "03-退款流程与时效",
+          "similarity": 0.6076
+        }
+      ],
+      "top1_similarity": 0.7398,
+      "top1_source": "11-发票政策",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a13",
+      "kind": "answerable",
+      "style": "keyword",
+      "query": "驿站 快递柜 代收 签收时间认定",
+      "expected_source": "12-签收与验货",
+      "hits": [
+        {
+          "source": "12-签收与验货",
+          "similarity": 0.727
+        },
+        {
+          "source": "07-物流异常处理",
+          "similarity": 0.6373
+        },
+        {
+          "source": "05-发货时效",
+          "similarity": 0.6038
+        }
+      ],
+      "top1_similarity": 0.727,
+      "top1_source": "12-签收与验货",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a14",
+      "kind": "answerable",
+      "style": "keyword",
+      "query": "退款 超过7个工作日 未到账 怎么办",
+      "expected_source": "03-退款流程与时效",
+      "hits": [
+        {
+          "source": "03-退款流程与时效",
+          "similarity": 0.757
+        },
+        {
+          "source": "05-发货时效",
+          "similarity": 0.6683
+        },
+        {
+          "source": "07-物流异常处理",
+          "similarity": 0.6582
+        }
+      ],
+      "top1_similarity": 0.757,
+      "top1_source": "03-退款流程与时效",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a15",
+      "kind": "answerable",
+      "style": "keyword",
+      "query": "七天无理由 不适用的商品范围",
+      "expected_source": "02-七天无理由退货",
+      "hits": [
+        {
+          "source": "02-七天无理由退货",
+          "similarity": 0.8087
+        },
+        {
+          "source": "01-退货政策总则",
+          "similarity": 0.7195
+        },
+        {
+          "source": "09-保修条款",
+          "similarity": 0.6351
+        }
+      ],
+      "top1_similarity": 0.8087,
+      "top1_source": "02-七天无理由退货",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_a16",
+      "kind": "answerable",
+      "style": "keyword",
+      "query": "价保 大促期间 价保期限",
+      "expected_source": "13-价保规则",
+      "hits": [
+        {
+          "source": "13-价保规则",
+          "similarity": 0.806
+        },
+        {
+          "source": "09-保修条款",
+          "similarity": 0.6887
+        },
+        {
+          "source": "06-运费规则",
+          "similarity": 0.623
+        }
+      ],
+      "top1_similarity": 0.806,
+      "top1_source": "13-价保规则",
+      "top1_correct": true,
+      "expected_rank": 1
+    },
+    {
+      "id": "cal_n01",
+      "kind": "unanswerable",
+      "group": "near",
+      "style": "natural",
+      "query": "你们支持信用卡分期付款吗？",
+      "kb_check": "在 knowledge/*.md 中 grep 分期、信用卡：均无命中",
+      "hits": [
+        {
+          "source": "13-价保规则",
+          "similarity": 0.49
+        },
+        {
+          "source": "11-发票政策",
+          "similarity": 0.4723
+        },
+        {
+          "source": "01-退货政策总则",
+          "similarity": 0.4517
+        }
+      ],
+      "top1_similarity": 0.49,
+      "top1_source": "13-价保规则"
+    },
+    {
+      "id": "cal_n02",
+      "kind": "unanswerable",
+      "group": "near",
+      "style": "natural",
+      "query": "我手里有一张礼品卡，下单的时候可以用它抵扣吗？",
+      "kb_check": "grep 礼品卡、储值：均无命中（另 grep 付款无命中；『支付』只出现在退款到账 / 价保退回的支付路径里，与礼品卡抵扣无关）",
+      "hits": [
+        {
+          "source": "13-价保规则",
+          "similarity": 0.5686
+        },
+        {
+          "source": "11-发票政策",
+          "similarity": 0.5642
+        },
+        {
+          "source": "06-运费规则",
+          "similarity": 0.5328
+        }
+      ],
+      "top1_similarity": 0.5686,
+      "top1_source": "13-价保规则"
+    },
+    {
+      "id": "cal_n03",
+      "kind": "unanswerable",
+      "group": "near",
+      "style": "natural",
+      "query": "我能不能不让快递送，直接去你们门店自己取货？",
+      "kb_check": "grep 门店、自提：均无命中",
+      "hits": [
+        {
+          "source": "07-物流异常处理",
+          "similarity": 0.59
+        },
+        {
+          "source": "06-运费规则",
+          "similarity": 0.5845
+        },
+        {
+          "source": "12-签收与验货",
+          "similarity": 0.5744
+        }
+      ],
+      "top1_similarity": 0.59,
+      "top1_source": "07-物流异常处理"
+    },
+    {
+      "id": "cal_n04",
+      "kind": "unanswerable",
+      "group": "near",
+      "style": "natural",
+      "query": "买海外直邮的商品，关税需要我自己另外交吗？",
+      "kb_check": "grep 海外、直邮、关税：均无命中",
+      "hits": [
+        {
+          "source": "06-运费规则",
+          "similarity": 0.5872
+        },
+        {
+          "source": "04-退货运费规则",
+          "similarity": 0.5548
+        },
+        {
+          "source": "08-换货流程",
+          "similarity": 0.5214
+        }
+      ],
+      "top1_similarity": 0.5872,
+      "top1_source": "06-运费规则"
+    },
+    {
+      "id": "cal_n05",
+      "kind": "unanswerable",
+      "group": "near",
+      "style": "keyword",
+      "query": "预售商品 定金 退还规则",
+      "kb_check": "grep 定金：无命中；grep 预售：仅命中 05-发货时效 第 3 行（预售发货时间以详情页为准），没有任何定金 / 退还内容",
+      "hits": [
+        {
+          "source": "13-价保规则",
+          "similarity": 0.6729
+        },
+        {
+          "source": "02-七天无理由退货",
+          "similarity": 0.667
+        },
+        {
+          "source": "01-退货政策总则",
+          "similarity": 0.6652
+        }
+      ],
+      "top1_similarity": 0.6729,
+      "top1_source": "13-价保规则"
+    },
+    {
+      "id": "cal_n06",
+      "kind": "unanswerable",
+      "group": "near",
+      "style": "keyword",
+      "query": "以旧换新 旧机回收 折价标准",
+      "kb_check": "grep 以旧、回收、折价：均无命中（文档里的『换新』只指质量问题 / 保修的免费换新，与以旧换新无关）",
+      "hits": [
+        {
+          "source": "09-保修条款",
+          "similarity": 0.6078
+        },
+        {
+          "source": "08-换货流程",
+          "similarity": 0.6015
+        },
+        {
+          "source": "13-价保规则",
+          "similarity": 0.5905
+        }
+      ],
+      "top1_similarity": 0.6078,
+      "top1_source": "09-保修条款"
+    },
+    {
+      "id": "cal_n07",
+      "kind": "unanswerable",
+      "group": "near",
+      "style": "keyword",
+      "query": "客服热线 人工客服 工作时间",
+      "kb_check": "grep 热线、工作时间、营业：均无命中（文档只提到联系客服 / 创建工单，没有渠道或时间）",
+      "hits": [
+        {
+          "source": "05-发货时效",
+          "similarity": 0.6202
+        },
+        {
+          "source": "09-保修条款",
+          "similarity": 0.6201
+        },
+        {
+          "source": "03-退款流程与时效",
+          "similarity": 0.6117
+        }
+      ],
+      "top1_similarity": 0.6202,
+      "top1_source": "05-发货时效"
+    },
+    {
+      "id": "cal_n08",
+      "kind": "unanswerable",
+      "group": "near",
+      "style": "keyword",
+      "query": "货到付款 是否支持",
+      "kb_check": "grep 货到付款、货到、COD、付款：均无命中；grep 到付：命中 04-退货运费规则 第 5、9 行，指的是退货寄回时的『到付件』（寄回运费的支付方式），不是下单时的支付方式；grep 支付：仅命中退款到账 / 价保退回的支付路径，与货到付款无关",
+      "hits": [
+        {
+          "source": "06-运费规则",
+          "similarity": 0.6052
+        },
+        {
+          "source": "05-发货时效",
+          "similarity": 0.6039
+        },
+        {
+          "source": "11-发票政策",
+          "similarity": 0.5957
+        }
+      ],
+      "top1_similarity": 0.6052,
+      "top1_source": "06-运费规则"
+    },
+    {
+      "id": "cal_o01",
+      "kind": "unanswerable",
+      "group": "off",
+      "style": "natural",
+      "query": "明天上海会下雨吗，需要带伞吗？",
+      "kb_check": "与业务无关；grep 下雨、天气均无命中",
+      "hits": [
+        {
+          "source": "05-发货时效",
+          "similarity": 0.4742
+        },
+        {
+          "source": "11-发票政策",
+          "similarity": 0.4548
+        },
+        {
+          "source": "06-运费规则",
+          "similarity": 0.4429
+        }
+      ],
+      "top1_similarity": 0.4742,
+      "top1_source": "05-发货时效"
+    },
+    {
+      "id": "cal_o02",
+      "kind": "unanswerable",
+      "group": "off",
+      "style": "natural",
+      "query": "用 Python 怎么把列表去重并且保持原来的顺序？",
+      "kb_check": "与业务无关；grep Python、编程均无命中",
+      "hits": [
+        {
+          "source": "07-物流异常处理",
+          "similarity": 0.4023
+        },
+        {
+          "source": "08-换货流程",
+          "similarity": 0.3964
+        },
+        {
+          "source": "06-运费规则",
+          "similarity": 0.3864
+        }
+      ],
+      "top1_similarity": 0.4023,
+      "top1_source": "07-物流异常处理"
+    },
+    {
+      "id": "cal_o03",
+      "kind": "unanswerable",
+      "group": "off",
+      "style": "natural",
+      "query": "秦始皇是哪一年统一六国的？",
+      "kb_check": "与业务无关；grep 秦始皇无命中",
+      "hits": [
+        {
+          "source": "09-保修条款",
+          "similarity": 0.3143
+        },
+        {
+          "source": "11-发票政策",
+          "similarity": 0.3044
+        },
+        {
+          "source": "05-发货时效",
+          "similarity": 0.3011
+        }
+      ],
+      "top1_similarity": 0.3143,
+      "top1_source": "09-保修条款"
+    },
+    {
+      "id": "cal_o04",
+      "kind": "unanswerable",
+      "group": "off",
+      "style": "natural",
+      "query": "周末想在家看部科幻电影，有什么推荐吗？",
+      "kb_check": "与业务无关；grep 电影无命中",
+      "hits": [
+        {
+          "source": "06-运费规则",
+          "similarity": 0.3634
+        },
+        {
+          "source": "05-发货时效",
+          "similarity": 0.3619
+        },
+        {
+          "source": "09-保修条款",
+          "similarity": 0.3514
+        }
+      ],
+      "top1_similarity": 0.3634,
+      "top1_source": "06-运费规则"
+    },
+    {
+      "id": "cal_o05",
+      "kind": "unanswerable",
+      "group": "off",
+      "style": "keyword",
+      "query": "红烧肉 做法 步骤",
+      "kb_check": "与业务无关；grep 红烧无命中",
+      "hits": [
+        {
+          "source": "06-运费规则",
+          "similarity": 0.4588
+        },
+        {
+          "source": "01-退货政策总则",
+          "similarity": 0.4538
+        },
+        {
+          "source": "11-发票政策",
+          "similarity": 0.4392
+        }
+      ],
+      "top1_similarity": 0.4588,
+      "top1_source": "06-运费规则"
+    },
+    {
+      "id": "cal_o06",
+      "kind": "unanswerable",
+      "group": "off",
+      "style": "keyword",
+      "query": "美元兑人民币 汇率 今日",
+      "kb_check": "与业务无关；grep 汇率无命中",
+      "hits": [
+        {
+          "source": "03-退款流程与时效",
+          "similarity": 0.4587
+        },
+        {
+          "source": "11-发票政策",
+          "similarity": 0.4428
+        },
+        {
+          "source": "13-价保规则",
+          "similarity": 0.4407
+        }
+      ],
+      "top1_similarity": 0.4587,
+      "top1_source": "03-退款流程与时效"
+    },
+    {
+      "id": "cal_o07",
+      "kind": "unanswerable",
+      "group": "off",
+      "style": "keyword",
+      "query": "牛顿第二定律 公式",
+      "kb_check": "与业务无关；grep 牛顿无命中",
+      "hits": [
+        {
+          "source": "06-运费规则",
+          "similarity": 0.4516
+        },
+        {
+          "source": "02-七天无理由退货",
+          "similarity": 0.4454
+        },
+        {
+          "source": "01-退货政策总则",
+          "similarity": 0.4395
+        }
+      ],
+      "top1_similarity": 0.4516,
+      "top1_source": "06-运费规则"
+    },
+    {
+      "id": "cal_o08",
+      "kind": "unanswerable",
+      "group": "off",
+      "style": "keyword",
+      "query": "马拉松 配速 训练计划",
+      "kb_check": "与业务无关；grep 马拉松、配速均无命中",
+      "hits": [
+        {
+          "source": "05-发货时效",
+          "similarity": 0.4599
+        },
+        {
+          "source": "07-物流异常处理",
+          "similarity": 0.4309
+        },
+        {
+          "source": "11-发票政策",
+          "similarity": 0.4211
+        }
+      ],
+      "top1_similarity": 0.4599,
+      "top1_source": "05-发货时效"
+    }
+  ]
+}

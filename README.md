@@ -53,7 +53,7 @@ flowchart TD
 ## 技术栈
 
 - **Agent**：LangGraph（手写 `StateGraph`）、LangChain `ChatOpenAI`，可接任意 OpenAI 兼容模型
-- **RAG**：ChromaDB（直接用原生 API）、智谱 `embedding-3`（用 httpx 直调 `/embeddings` 接口）
+- **RAG**：ChromaDB（直接用原生 API）、智谱 `embedding-3`（用 httpx 直调 `/embeddings` 接口；可选本地 Ollama `bge-m3`，见 [Embedding 配置](#embedding-配置)）
 - **服务**：FastAPI（异步）、Uvicorn
 - **持久化**：PostgreSQL、SQLAlchemy 2.0 async、asyncpg
 - **部署**：Docker Compose
@@ -94,6 +94,54 @@ python scripts/seed_data.py       # 灌入模拟订单
 python scripts/build_kb.py        # 构建向量库到 ./chroma_db
 uvicorn main:app --reload
 ```
+
+### Embedding 配置
+
+默认用智谱 `embedding-3`，行为与引入可选提供方之前一致；也可以改用本地 Ollama 的 `bge-m3`（不需要 key）。配置都在 `.env`（模板见 [`.env.example`](.env.example)）：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `EMBEDDING_PROVIDER` | `zhipu` | `zhipu`（`POST {base}/embeddings`）或 `ollama`（`POST {base}/api/embed`） |
+| `EMBEDDING_MODEL_NAME` | zhipu：`embedding-3`；ollama：`bge-m3` | 模型名 |
+| `EMBEDDING_BASE_URL` | zhipu：回退到 `LLM_BASE_URL`；ollama：`http://localhost:11434` | 接口地址 |
+| `EMBEDDING_API_KEY` | 回退到 `LLM_API_KEY` | 只有 zhipu 需要 |
+| `EMBEDDING_DIMENSIONS` | `1024` | 只有 zhipu 会发送；ollama 的维度由模型决定（bge-m3 实测 1024） |
+| `EMBEDDING_SIMILARITY_THRESHOLD` | `0.25` | 低于它的片段被过滤，全部被过滤时返回"未找到相关信息" |
+| `EMBEDDING_TIMEOUT` | `60` | 请求超时（秒）；连接超时固定 10 秒（原来连接超时也是 60 秒，这是唯一改动的超时参数） |
+
+**向量库和配置必须一致。** 建库时会把 provider、模型名和向量维度写进 ChromaDB 集合的元数据。之后配置变了却没有重建：
+
+- `search()` 返回以"知识库检索失败："开头的说明（演示页和评测里显示为 `error`），不会拿不同语义空间的向量去算相似度；
+- `scripts/build_kb.py` 不会跳过，而是报错退出，要求加 `--rebuild`；
+- 服务启动时日志里会写出不一致（`[rag]` 开头的日志行）。
+
+旧版本建的库没有这些元数据：只有当前配置是默认的 zhipu / embedding-3 / 1024，并且库里的向量确实是 1024 维时才继续使用，同时写一条 WARNING 建议重建；其他情况一律按不一致处理。旧库没有元数据，无法区分同为 1024 维的其他模型，如果曾经改过 `EMBEDDING_MODEL_NAME`，请 `--rebuild`。
+
+元数据缺项（三个键缺任何一个）或维度不是整数，同样按不一致处理。zhipu 下库里记录的维度还会和 `EMBEDDING_DIMENSIONS` 比较（只改了维度也会被发现）；ollama 的维度由模型决定，拿到查询向量后再比较。
+
+切换 provider 时 `EMBEDDING_PROVIDER` / `EMBEDDING_MODEL_NAME` / `EMBEDDING_BASE_URL` 三项要一起改：provider 是 ollama 却仍是 `embedding-3` 或智谱地址时，启动日志会有 WARNING（只告警，不改值）。
+
+**切换提供方**（本地运行）：
+
+```bash
+python scripts/build_kb.py --rebuild
+```
+
+**在 Docker Compose 里使用宿主机的 Ollama**：`docker-compose.yml` 给 app 配了 `extra_hosts: host.docker.internal:host-gateway`。在 `.env` 里设置 `EMBEDDING_PROVIDER=ollama`、`EMBEDDING_MODEL_NAME=bge-m3`、`EMBEDDING_BASE_URL=http://host.docker.internal:11434`，然后重建向量库：
+
+```bash
+docker compose exec app python -c "import httpx;print(httpx.get('http://host.docker.internal:11434/api/version',timeout=5).text)"
+```
+
+```bash
+docker compose exec app python scripts/build_kb.py --rebuild
+```
+
+第一条命令检查连通性，应当打印 Ollama 的版本号。在 Windows + Docker Desktop 上实测，即使 Ollama 只监听 `127.0.0.1:11434` 也能连通；Linux 原生 Docker 上如果连不上，需要让 Ollama 监听 `0.0.0.0`（设置 `OLLAMA_HOST=0.0.0.0:11434` 后重启 Ollama）。这样做会把它暴露给局域网，记得用防火墙限制。
+
+也可以只删掉向量卷，让容器启动时重新建库：先 `docker compose down`，再 `docker volume rm <项目名>_chroma_data`，最后 `docker compose up`。⚠️ 不要为了这个用 `docker compose down -v`：它会把 `pgdata` 卷也删掉，订单、工单和会话记录都会丢失。启动时 seed 会重新灌入订单，但工单和会话不会恢复。
+
+**重试与日志**：embedding 请求遇到连接类错误（`ConnectError`、`ReadError`、`RemoteProtocolError`、`ConnectTimeout` 等，`SSL: UNEXPECTED_EOF_WHILE_READING` 就属于这一类）时最多尝试 3 次，第 1、2 次失败后分别等 1 秒、3 秒。读超时、写超时、连接池超时、HTTP 4xx/5xx，以及 `UnsupportedProtocol`（`base_url` 漏写 `http://`）、`LocalProtocolError` 这类确定性的配置错误不重试。每次失败都会写日志，记录阶段（`build` / `search`）、第几次、异常类型和已耗时，不记录 key 和请求头，主机只记 `host[:port]`（不带 `user:pass@`）；同一个向量库不一致的原因，`search()` 只记一次 ERROR，不会每次检索都刷屏。退避总共只有约 4 秒，挡得住偶发的单次断连；如果故障持续几十秒以上，3 次尝试会全部落在故障期内，重试不起作用。日志的作用是把这类故障的类型和时间记下来，方便定位。
 
 ### 离线测试（不需要 API key）
 
@@ -149,11 +197,15 @@ python evals/run_eval.py --cases evals/holdout_cases.json    # 指定用例文�
 
 ## 已知局限与下一步
 
-- 评测规模小：23 个用例，只在 DeepSeek 的对话模型上测过（结果文件里有两个模型 ID：`deepseek-v4-flash`、`deepseek-flash`），没有做跨厂商对比。回复断言用的是关键词包含，比较宽松；历史上出现过偶发失败（tool_select_003、boundary_004、rag_001），见 `evals/results/` 中的历史记录。
-- RAG 方案比较基础：按字符长度切分，没有 rerank 和混合检索；相似度阈值 0.25 是经验值，验证情况见下一条。
-- 相似度阈值 0.25 没有用无关问题的真实相似度分布验证过。机制上（见 `rag.py` 的 `search()`），检索固定取 top_k=3，只按阈值过滤：只要有片段分数超过 0.25，即使问题与知识库内容无关，这些片段也会交给模型。演示时对"你们支持分期付款吗？"（`knowledge/` 中没有该内容）实际检索了一次（对话模型 `deepseek-flash`，embedding 为智谱 `embedding-3`）：返回 3 个无关片段（发票政策 0.57、价保规则 0.54、发货时效 0.53，见 `docs/demo.gif`），均高于阈值 0.25，未触发"未找到"降级；但模型最终回复明确说明知识库中没有分期付款的规则，没有编造。这只是单个问题的观察：它说明 0.25 在这个问题上起不到过滤作用，目前防编造主要靠提示词和模型本身；阈值整体表现仍未验证，计划用一批无关问题统计相似度分布后再标定。
-- 演示和评测中观察到偶发的 embedding 请求 SSL 断连（`SSL: UNEXPECTED_EOF_WHILE_READING`），多次失败成块出现；在容器内用独立脚本连续请求未复现该错误（脚本与日志未留存）。原因未定位（`rag.py` 每次请求新建连接，不是复用旧连接；异常类型目前不会被记录）。计划在 `embedding-bge-m3` 分支加日志与带退避的重试。
+- 评测规模小：调优集 23 条、验证集 10 条（验证集未用于调参），只在 DeepSeek 的对话模型上测过（结果文件里有两个模型 ID：`deepseek-v4-flash`、`deepseek-flash`），没有做跨厂商对比。回复断言用的是关键词包含，比较宽松；历史上出现过偶发失败（tool_select_003、boundary_004、rag_001），见 `evals/results/` 中的历史记录。两套用例目前都是满分，只能检验"有没有变差"，分辨不出"有没有变好"。
+- RAG 方案比较基础：按字符长度切分，没有 rerank 和混合检索；检索后只按相似度阈值过滤，没有对片段做相关性判断。
+- 相似度阈值很难过滤"业务相近、但知识库里没有答案"的问题。做过一次对照实验（方法、全部数据和局限见 [docs/embedding-experiment.md](docs/embedding-experiment.md)），观察如下：
+  - 默认的智谱 `embedding-3` + 阈值 0.25：校准集里 16 条无答案问题（8 条业务相近、8 条业务无关）的 top-1 相似度最低为 0.3143，全部高于 0.25，0/16 被过滤。演示里"你们支持分期付款吗？"（`knowledge/` 中没有该内容）命中了 3 个无关片段（发票政策 0.57、价保规则 0.54、发货时效 0.53，见 `docs/demo.gif`），模型最终回复明确说明知识库中没有分期付款的规则，没有编造；目前防编造主要靠提示词和模型本身。
+  - 用校准集按事先固定的规则标定阈值（取可回答问题 top-1 的最小值，向下取整到 0.01），`embedding-3` 与本地 Ollama `bge-m3` 都得到 0.62：业务无关的问题 8/8 被过滤，业务相近的问题只过滤了 6/8，没有达到事先登记的 ≥ 7/8；可回答与无答案问题的相似度范围有重叠，不严格可分。
+  - 三个配置（`embedding-3`@0.25、`embedding-3`@0.62、`bge-m3`@0.62）在调优集和验证集上各跑一次，都是 23/23 和 10/10，与 0.25 基线没有差异。这个结果不能说明哪个 embedding 或哪个阈值更好：校准集是作者自己写的，每个子集只有 8 条，阈值是在校准集内拟合的，每个配置只跑了一次。另外，Agent 每次运行会改写检索 query，同一用例在三个配置下送检的 query 并不完全相同，所以单个用例的检索差异不能只归因于 embedding 或阈值。
+  - 默认配置没有改动（仍是 `embedding-3`@0.25）。
+- 演示和评测中观察到偶发的 embedding 请求 SSL 断连（`SSL: UNEXPECTED_EOF_WHILE_READING`），多次失败成块出现；在容器内用独立脚本连续请求未复现该错误（脚本与日志未留存）。原因仍未定位（`rag.py` 每次请求新建连接，不是复用旧连接）。现已加上带退避的重试和失败日志（见 [Embedding 配置](#embedding-配置)）；如果断连持续时间超过约 4 秒的退避窗口，重试解决不了，日志用于之后判断是握手失败还是读取中断。
 - 会话只保存用户消息和最终回复，工具调用的中间过程不入库。API 没有鉴权。
 - `test_agent.py` 依赖 PostgreSQL，不是纯单元测试。
 - 下一阶段：执行 Trace 可视化、人工审批（HITL）。
-- 计划：用本地 Ollama bge-m3 与智谱 embedding-3 做对照实验（尚未进行）。
+- 可能的后续方向：在检索之后增加 rerank 或相关性判断，而不是继续调阈值；要评估它，需要一套没有参与过这次选型的新验证集（现有验证集已被用于三个配置的对照）。

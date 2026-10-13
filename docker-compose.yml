@@ -25,6 +25,9 @@ services:
       - "${APP_PORT:-8000}:8000"
     volumes:
       - chroma_data:/app/chroma_db
+    # 让容器能用 host.docker.internal 访问宿主机上的服务（EMBEDDING_PROVIDER=ollama 时访问宿主机 Ollama）
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy

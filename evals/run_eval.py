@@ -7,6 +7,7 @@ V7 自动化评测运行器：对 Agent 的工具选择、边界行为、多轮�
     python evals/run_eval.py boundary       # 只跑某一类（传类别名）
     python evals/run_eval.py --cases evals/holdout_cases.json   # 跑验证集（结果文件以 holdout_cases_ 开头）
     python evals/run_eval.py --cases evals/holdout_cases.json --ids holdout_002,holdout_004   # 只重跑指定用例
+    python evals/run_eval.py --tag ollama-bge-m3_t0.60   # 结果 / 报告文件名带标签，不覆盖 latest 报告（rerun 是保留字）
 
 设计说明：
 - 不走 HTTP、不起 uvicorn：直接 build_agent() 调用，多轮编排逻辑复用
@@ -20,6 +21,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 import uuid
 from datetime import datetime
@@ -29,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import func, select  # noqa: E402
 
 import db  # noqa: E402
-import rag  # noqa: E402  agent 已间接导入过，这里只读 EMBEDDING_MODEL_NAME
+import rag  # noqa: E402  agent 已间接导入过，这里只读 embedding 配置（不含 key）
 from agent import build_agent  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage  # noqa: E402
 from main import history_to_messages  # noqa: E402
@@ -211,6 +213,19 @@ async def run_case(agent, case: dict, run_id: str) -> dict:
     }
 
 
+def validate_tag(tag: str) -> str | None:
+    """--tag 合法返回 None，否则返回原因。
+
+    rerun（或以 _rerun 结尾）是保留字：--ids 重跑的结果 / 报告文件名里已经有 _rerun，
+    允许它当标签会让两种文件撞名、互相覆盖。
+    """
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", tag):
+        return f"--tag 只允许字母、数字、. _ -：{tag!r}"
+    if re.search(r"(^|_)rerun$", tag, re.IGNORECASE):
+        return f"--tag 不能是保留字 rerun（也不能以 _rerun 结尾），会与 --ids 重跑的结果 / 报告文件名冲突：{tag!r}"
+    return None
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Agent 自动化评测")
     parser.add_argument("category", nargs="?", help="只跑某一类用例（类别名）")
@@ -224,7 +239,16 @@ async def main():
         help="只跑指定用例，逗号分隔，例如 --ids holdout_002,holdout_004；"
         "结果与报告会标注为重跑，不覆盖完整运行的 latest 报告",
     )
+    parser.add_argument(
+        "--tag",
+        help="给结果文件和报告加标签（只允许字母、数字、. _ -），例如 --tag zhipu-embedding-3_t0.25；"
+        "带标签时报告写到 <报告名>_<标签>.md，不覆盖已提交的 latest 报告",
+    )
     args = parser.parse_args()
+    tag_problem = validate_tag(args.tag) if args.tag else None
+    if tag_problem:
+        print(tag_problem)
+        sys.exit(1)
     category_filter = args.category
     id_filter = [i.strip() for i in args.ids.split(",") if i.strip()] if args.ids else None
 
@@ -290,6 +314,8 @@ async def main():
         f"- 运行时间：{started.strftime('%Y-%m-%d %H:%M:%S')}（耗时 {duration:.0f}s）",
         f"- 用例集：{cases_name}",
         f"- 模型：{os.getenv('LLM_MODEL_NAME', '?')}（temperature=0）",
+        f"- Embedding：{rag.EMBEDDING_PROVIDER}/{rag.EMBEDDING_MODEL_NAME}，相似度阈值 {rag.SIMILARITY_THRESHOLD}"
+        + (f"，标签 {args.tag}" if args.tag else ""),
         f"- 总用例：{total}，通过：{passed}，**通过率 {passed / total * 100:.0f}%**",
     ]
     if id_filter:
@@ -348,18 +374,22 @@ async def main():
     result_prefix = "eval" if is_default else cases_stem
     # 重跑（--ids）的结果文件加 rerun 标记，报告不覆盖完整运行的 latest 报告
     rerun_tag = "_rerun" if id_filter else ""
-    result_file = os.path.join(RESULTS_DIR, f"{result_prefix}{rerun_tag}_{stamp}.json")
+    label = f"_{args.tag}" if args.tag else ""
+    result_file = os.path.join(RESULTS_DIR, f"{result_prefix}{label}{rerun_tag}_{stamp}.json")
     with open(result_file, "w", encoding="utf-8") as f:
         json.dump(
             {"meta": {"time": stamp, "model": os.getenv("LLM_MODEL_NAME"), "total": total, "passed": passed,
                       "cases_file": cases_name, "ids": id_filter,
                       "retrieval_error_ids": error_ids, "retrieval_unknown_ids": unknown_ids,
-                      "llm_error_ids": llm_error_ids, "embedding_model": rag.EMBEDDING_MODEL_NAME},
+                      "llm_error_ids": llm_error_ids, "embedding_model": rag.EMBEDDING_MODEL_NAME,
+                      "tag": args.tag, "embedding_provider": rag.EMBEDDING_PROVIDER,
+                      "embedding_index": rag.index_info(),
+                      "similarity_threshold": rag.SIMILARITY_THRESHOLD},
              "results": records},
             f, ensure_ascii=False, indent=2,
         )
     report_stem = "latest_report" if is_default else f"{cases_stem}_latest_report"
-    report_name = f"{report_stem}{'_rerun' if id_filter else ''}.md"
+    report_name = f"{report_stem}{label}{'_rerun' if id_filter else ''}.md"
     report_file = os.path.join(RESULTS_DIR, report_name)
     with open(report_file, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))

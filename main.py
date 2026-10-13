@@ -10,8 +10,10 @@ V6 起支持多轮会话：请求可携带 session_id，服务端从 PostgreSQL 
 本轮结束后把用户消息和最终回复写回库里（工具调用中间过程不入库）。
 不传 session_id 时自动生成并随响应返回，老用法完全兼容。
 """
+import asyncio
 import os
 import uuid
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
@@ -19,10 +21,19 @@ from langchain_core.messages import AnyMessage, HumanMessage, AIMessage, ToolMes
 from pydantic import BaseModel
 
 import db
+import rag
 from agent import build_agent
 from retrieval_trace import RetrievalTrace, parse_retrieval
 
-app = FastAPI(title="企业客服与工单 Agent")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # 启动时把 embedding 配置与向量库是否一致写进日志（不一致时检索会失败，这里提前暴露）
+    rag.configure_logging()
+    await asyncio.to_thread(rag.log_index_status)
+    yield
+
+
+app = FastAPI(title="企业客服与工单 Agent", lifespan=lifespan)
 
 _agent = None
 

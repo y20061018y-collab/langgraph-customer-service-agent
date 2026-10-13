@@ -46,6 +46,11 @@ python evals/run_eval.py --cases evals/holdout_cases.json
 | 运行时间 | 模型 | 通过率 | 失败用例 | 结果文件 |
 | --- | --- | --- | --- | --- |
 | 2026-10-13（`20261013_023243`）<br>commit `00c2edd`；embedding `embedding-3`；Docker 容器 Python 3.14.8；无重跑 | deepseek-flash | 10/10 | 无 | [holdout_cases_20261013_023243.json](results/holdout_cases_20261013_023243.json)（报告：[holdout_cases_latest_report.md](results/holdout_cases_latest_report.md)） |
+| 2026-10-13（`20261013_041645`）<br>commit `a6f9b1b`（代码 `3d2060f`）；embedding `embedding-3`，阈值 0.25；tag `zhipu-embedding-3_t0.25`；Docker 容器；无重跑 | deepseek-flash | 10/10 | 无 | [holdout_cases_zhipu-embedding-3_t0.25_20261013_041645.json](results/holdout_cases_zhipu-embedding-3_t0.25_20261013_041645.json)（报告：[holdout_cases_latest_report_zhipu-embedding-3_t0.25.md](results/holdout_cases_latest_report_zhipu-embedding-3_t0.25.md)） |
+| 2026-10-13（`20261013_041909`）<br>commit `a6f9b1b`（代码 `3d2060f`）；embedding `embedding-3`，阈值 0.62；tag `zhipu-embedding-3_t0.62`；Docker 容器；无重跑 | deepseek-flash | 10/10 | 无 | [holdout_cases_zhipu-embedding-3_t0.62_20261013_041909.json](results/holdout_cases_zhipu-embedding-3_t0.62_20261013_041909.json)（报告：[holdout_cases_latest_report_zhipu-embedding-3_t0.62.md](results/holdout_cases_latest_report_zhipu-embedding-3_t0.62.md)） |
+| 2026-10-13（`20261013_042138`）<br>commit `a6f9b1b`（代码 `3d2060f`）；embedding Ollama `bge-m3`，阈值 0.62；tag `ollama-bge-m3_t0.62`；Docker 容器；无重跑 | deepseek-flash | 10/10 | 无 | [holdout_cases_ollama-bge-m3_t0.62_20261013_042138.json](results/holdout_cases_ollama-bge-m3_t0.62_20261013_042138.json)（报告：[holdout_cases_latest_report_ollama-bge-m3_t0.62.md](results/holdout_cases_latest_report_ollama-bge-m3_t0.62.md)） |
+
+对照实验记录（追加）：上面后三行是 [docs/embedding-experiment.md](../docs/embedding-experiment.md) 的对照实验，同一批 10 个验证用例在三个 embedding / 阈值配置下各跑了一次（运行前先在 `docs/` 里登记了判断标准）。本次验证集被用于三个配置的对照，但**没有据此改动默认配置**（默认仍是 zhipu / `embedding-3` / 0.25），也没有改动 `agent.py`、`rag.py`、`tools.py`、system prompt 或两个用例文件；三次运行均没有出现 `error` 检索状态或 `llm_error`，因此没有重跑。如果之后依据这些对照结果去改默认配置或其他参数，按下面的"使用规则"第 2、3 条处理，验证集降级为调优集。
 
 结果由作者运行后如实记录，包括失败的用例，不挑选、不重跑到全绿再记录。如果同一版本重复运行出现不同结果，每次都记。重跑只允许按下文的"重跑规则"进行。
 
