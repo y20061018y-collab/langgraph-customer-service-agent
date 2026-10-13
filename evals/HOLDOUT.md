@@ -45,9 +45,13 @@ python evals/run_eval.py --cases evals/holdout_cases.json
 
 | 运行时间 | 模型 | 通过率 | 失败用例 | 结果文件 |
 | --- | --- | --- | --- | --- |
-| 待填（由作者运行后填写） | 待填 | 待填 | 待填 | 待填 |
+| 2026-10-13（`20261013_023243`）<br>commit `00c2edd`；embedding `embedding-3`；Docker 容器 Python 3.14.8；无重跑 | deepseek-flash | 10/10 | 无 | [holdout_cases_20261013_023243.json](results/holdout_cases_20261013_023243.json)（报告：[holdout_cases_latest_report.md](results/holdout_cases_latest_report.md)） |
 
 结果由作者运行后如实记录，包括失败的用例，不挑选、不重跑到全绿再记录。如果同一版本重复运行出现不同结果，每次都记。重跑只允许按下文的"重跑规则"进行。
+
+运行说明：`retrieval_status_counts` 合计 hit=8（001–005、007、009、010 各 1 次），其余状态均为 0；holdout_006、holdout_008 未调用检索。`meta.retrieval_error_ids`、`retrieval_unknown_ids`、`llm_error_ids` 均为空，因此没有按"重跑规则"重跑任何用例。运行前先用 `scripts/build_kb.py` 在临时 PostgreSQL 和全新 chroma_db 上建库（13 个文档、13 个 chunk）。运行期间未修改任何代码、prompt、阈值、工具和两个用例文件。
+
+观察（不是失败，只是记录）：holdout_007 是"知识库里没有答案"的用例，检索状态仍为 `hit`，即不相关片段（发票政策 0.62、退货总则 0.61、价保规则 0.61）超过了 0.25 阈值并交给了模型，该用例的通过靠的是模型没有编造积分规则，与 README"已知局限"里对阈值的描述一致。
 
 ## 使用规则
 

@@ -143,7 +143,7 @@ python evals/run_eval.py --cases evals/holdout_cases.json    # 指定用例文�
 
 上面 23 个用例由作者编写并参与过调优（改过 prompt，也改过一个用例的断言），100% 只能说明调优目标达成。为了看没调优过的问法表现如何，另有一组 10 个**不参与调优**的验证用例：[`evals/holdout_cases.json`](evals/holdout_cases.json)，覆盖退换货、运费、物流异常、发票、保修、订单不存在、知识库里没有答案、缺信息的模糊提问、越权和政策之外的要求。
 
-- 通过率：**待填（由作者运行后填写）**
+- 通过率：**10/10**（RAG 5/5、工具选择 1/1、边界拒绝 4/4），结果文件 [`evals/results/holdout_cases_20261013_023243.json`](evals/results/holdout_cases_20261013_023243.json)（对话模型 `deepseek-flash`，embedding `embedding-3`，commit `00c2edd`，Docker 容器 Python 3.14.8）。检索状态：无 `error`、无 `unknown`，无对话模型调用异常，**没有重跑**，10 个用例均为首次完整运行的结果。样本只有 10 个，不是统计意义上的泛化证明，局限见下。
 - 运行方式：`python evals/run_eval.py --cases evals/holdout_cases.json`（结果文件前缀为 `holdout_cases_`，不覆盖调优集的结果）
 - 使用规则、局限（样本只有 10 个、用例作者读过 prompt 与知识库、关键词断言较宽松）和"若因验证集失败改了 prompt / RAG / 工具，这批用例即降级为调优集"的约定见 [evals/HOLDOUT.md](evals/HOLDOUT.md)。
 
