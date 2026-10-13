@@ -235,6 +235,13 @@ def test_parse_real_rag_search_output():
     from retrieval_trace import parse_retrieval
 
     class FakeCollection:
+        # 与当前配置一致的建库元数据（维度 4 对应下面假 embedding 返回的向量长度）
+        metadata = {
+            "embedding_provider": rag.CONFIG.provider,
+            "embedding_model": rag.CONFIG.model,
+            "embedding_dimension": 4,
+        }
+
         def __init__(self, distances):
             self.distances = distances
 
@@ -415,6 +422,508 @@ def test_chat_endpoint_and_index():
     print("✅ /chat 返回 retrievals（降级被标出），GET / 返回演示页")
 
 
+# ---------- embedding 提供方 / 向量库一致性 / 重试（rag.py）：不调用任何真实接口 ----------
+
+class _ListHandler:
+    """把 rag logger 的日志收集到列表里，便于断言（也顺便不让日志刷屏）。"""
+
+    def __init__(self):
+        import logging
+
+        self.records = []
+        self.handler = logging.Handler()
+        self.handler.emit = lambda record: self.records.append(record)
+        self.logger = logging.getLogger("rag")
+
+    def __enter__(self):
+        import logging
+
+        self.old = (self.logger.handlers[:], self.logger.level, self.logger.propagate)
+        self.logger.handlers = [self.handler]
+        self.logger.setLevel(logging.DEBUG)
+        self.logger.propagate = False
+        return self
+
+    def __exit__(self, *exc):
+        self.logger.handlers, level, self.logger.propagate = self.old
+        self.logger.setLevel(level)
+
+    def text(self, levelname=None):
+        return "\n".join(r.getMessage() for r in self.records if levelname in (None, r.levelname))
+
+
+class _FakeIndex:
+    """假的 ChromaDB 集合：只实现一致性校验 / 检索 / 建库会用到的方法。"""
+
+    def __init__(self, metadata, dim=1024, count=13):
+        self.metadata = metadata
+        self.dim = dim
+        self._count = count
+
+    def count(self):
+        return self._count
+
+    def get(self, limit, include):
+        return {"embeddings": [[0.0] * self.dim] if self.dim else []}
+
+    def query(self, **kwargs):
+        return {
+            "documents": [["发票政策\n支持电子普通发票。"]],
+            "metadatas": [[{"source": "11-发票政策"}]],
+            "distances": [[0.2]],
+        }
+
+
+def _meta(provider, model, dim):
+    return {"hnsw:space": "cosine", "embedding_provider": provider, "embedding_model": model, "embedding_dimension": dim}
+
+
+class _RagPatch:
+    """临时替换 rag 的模块级状态，退出时恢复。"""
+
+    NAMES = ("CONFIG", "CONFIG_ERROR", "embed_texts", "get_collection", "_TRANSPORT", "_sleep",
+             "_legacy_warned", "CHROMA_DIR", "_collection_cache")
+
+    def __init__(self, **overrides):
+        self.overrides = overrides
+
+    def __enter__(self):
+        import rag
+
+        self.rag = rag
+        self.saved = {n: getattr(rag, n) for n in self.NAMES}
+        for k, v in self.overrides.items():
+            setattr(rag, k, v)
+        return rag
+
+    def __exit__(self, *exc):
+        for k, v in self.saved.items():
+            setattr(self.rag, k, v)
+
+
+def test_embedding_config_parsing():
+    """配置解析：默认值与原来一致；ollama 的默认值；非法取值不让 import 失败而是报配置错误。"""
+    import rag
+
+    c = rag.load_embedding_config({})
+    assert (c.provider, c.model, c.base_url, c.api_key) == ("zhipu", "embedding-3", "", None)
+    assert (c.dimensions, c.similarity_threshold, c.timeout) == (1024, 0.25, 60.0)
+    assert c.describe() == "zhipu/embedding-3/1024"
+
+    # zhipu：没配 EMBEDDING_* 时回退到 LLM_*（与原来一致），EMBEDDING_* 优先
+    c = rag.load_embedding_config({"LLM_BASE_URL": "https://llm.example/v4/", "LLM_API_KEY": "sk-llm"})
+    assert (c.base_url, c.api_key) == ("https://llm.example/v4", "sk-llm")
+    c = rag.load_embedding_config({
+        "LLM_BASE_URL": "https://llm.example/v4/", "LLM_API_KEY": "sk-llm",
+        "EMBEDDING_BASE_URL": "https://emb.example/v4/", "EMBEDDING_API_KEY": "sk-emb",
+    })
+    assert (c.base_url, c.api_key) == ("https://emb.example/v4", "sk-emb")
+
+    # ollama：默认 bge-m3 + 本机地址；不回退到 LLM_*，也不带 key
+    c = rag.load_embedding_config({"EMBEDDING_PROVIDER": " Ollama ", "LLM_BASE_URL": "https://llm/", "LLM_API_KEY": "sk"})
+    assert (c.provider, c.model, c.base_url, c.api_key) == ("ollama", "bge-m3", "http://localhost:11434", None)
+    assert c.describe() == "ollama/bge-m3/?"
+    c = rag.load_embedding_config({"EMBEDDING_PROVIDER": "ollama", "EMBEDDING_BASE_URL": "http://host.docker.internal:11434/"})
+    assert c.base_url == "http://host.docker.internal:11434"
+
+    # 阈值沿用旧变量名 EMBEDDING_SIMILARITY_THRESHOLD；SIMILARITY_THRESHOLD 不读
+    assert rag.load_embedding_config({"EMBEDDING_SIMILARITY_THRESHOLD": "0.6"}).similarity_threshold == 0.6
+    assert rag.load_embedding_config({"SIMILARITY_THRESHOLD": "0.6"}).similarity_threshold == 0.25
+    assert rag.load_embedding_config({"EMBEDDING_TIMEOUT": "5"}).timeout == 5.0
+
+    for bad in [{"EMBEDDING_PROVIDER": "openai"}, {"EMBEDDING_DIMENSIONS": "abc"},
+                {"EMBEDDING_SIMILARITY_THRESHOLD": "x"}, {"EMBEDDING_TIMEOUT": "soon"}]:
+        try:
+            rag.load_embedding_config(bad)
+        except rag.EmbeddingConfigError:
+            continue
+        raise AssertionError(f"应当报配置错误：{bad}")
+
+    # repr 不带 key
+    assert "sk-emb-SECRET" not in repr(rag.load_embedding_config({"EMBEDDING_API_KEY": "sk-emb-SECRET"}))
+    print("✅ embedding 配置解析：默认值不变、ollama 默认值、非法取值报配置错误、repr 不含 key")
+
+
+def test_check_index_consistency():
+    """一致性校验：provider / model / 维度不一致都报出来；无元数据的旧库只在默认配置 + 1024 维时放行。"""
+    import rag
+
+    zhipu = rag.load_embedding_config({})
+    ollama = rag.load_embedding_config({"EMBEDDING_PROVIDER": "ollama"})
+
+    assert rag.check_index(_FakeIndex(_meta("zhipu", "embedding-3", 1024)), zhipu) is None
+    assert rag.check_index(_FakeIndex(_meta("zhipu", "embedding-3", 1024)), zhipu, query_dim=1024) is None
+    p = rag.check_index(_FakeIndex(_meta("zhipu", "embedding-3", 1024)), zhipu, query_dim=512)
+    assert p and "库：zhipu/embedding-3/1024" in p and "当前：zhipu/embedding-3/512" in p and "--rebuild" in p
+
+    p = rag.check_index(_FakeIndex(_meta("zhipu", "embedding-3", 1024)), ollama)
+    assert p and "库：zhipu/embedding-3/1024" in p and "当前：ollama/bge-m3/?" in p
+    p = rag.check_index(_FakeIndex(_meta("zhipu", "embedding-2", 1024)), zhipu)
+    assert p and "embedding-2" in p
+    assert rag.check_index(_FakeIndex(_meta("ollama", "bge-m3", 1024)), ollama, query_dim=1024) is None
+
+    legacy = {"hnsw:space": "cosine"}
+    with _RagPatch(_legacy_warned=False), _ListHandler() as logs:
+        assert rag.check_index(_FakeIndex(legacy, dim=1024), zhipu) is None
+        assert rag.check_index(_FakeIndex(legacy, dim=1024), zhipu, query_dim=1024) is None
+        assert len([r for r in logs.records if r.levelname == "WARNING"]) == 1  # 只告警一次
+        assert "--rebuild" in logs.text("WARNING")
+        for idx, cfg in [
+            (_FakeIndex(legacy, dim=512), zhipu),  # 旧库但维度不是 1024
+            (_FakeIndex(legacy, dim=1024), ollama),  # 非默认 provider
+            (_FakeIndex(legacy, dim=1024), rag.load_embedding_config({"EMBEDDING_DIMENSIONS": "2048"})),
+            (_FakeIndex(legacy, dim=1024), rag.load_embedding_config({"EMBEDDING_MODEL_NAME": "embedding-2"})),
+        ]:
+            p = rag.check_index(idx, cfg)
+            assert p and "旧版建的库" in p and "--rebuild" in p, (cfg, p)
+    print("✅ 向量库一致性：provider / model / 维度不一致明确报错，旧库只在默认配置下放行并告警一次")
+
+
+def test_search_returns_error_on_index_mismatch():
+    """search 永不抛异常：不一致 / 配置错误时返回"知识库检索失败："开头的文案，parse_retrieval 判为 error。"""
+    import rag
+    from retrieval_trace import parse_retrieval
+
+    called = []
+
+    def must_not_embed(texts):
+        called.append(texts)
+        return [[0.0] * 1024 for _ in texts]
+
+    ollama = rag.load_embedding_config({"EMBEDDING_PROVIDER": "ollama"})
+    # provider 不一致：在调用 embedding 之前就失败
+    with _RagPatch(CONFIG=ollama, embed_texts=must_not_embed,
+                   get_collection=lambda: _FakeIndex(_meta("zhipu", "embedding-3", 1024))), _ListHandler() as logs:
+        out = rag.search("怎么开发票")
+    assert out.startswith("知识库检索失败：向量库与当前 embedding 配置不一致"), out
+    assert "--rebuild" in out and out.endswith("请告知用户暂时无法查询知识库。")
+    assert called == []
+    assert parse_retrieval("q", out).status == "error"
+    assert "不一致" in logs.text("ERROR")
+
+    # 维度不一致：拿到查询向量后才能发现
+    with _RagPatch(CONFIG=ollama, embed_texts=lambda texts: [[0.0] * 768 for _ in texts],
+                   get_collection=lambda: _FakeIndex(_meta("ollama", "bge-m3", 1024))), _ListHandler():
+        out = rag.search("怎么开发票")
+    assert out.startswith("知识库检索失败：") and "当前：ollama/bge-m3/768" in out, out
+    assert parse_retrieval("q", out).status == "error"
+
+    # 配置错误（例如 EMBEDDING_PROVIDER 拼错）
+    with _RagPatch(CONFIG=None, CONFIG_ERROR="EMBEDDING_PROVIDER 只能是 zhipu/ollama，当前为 'openai'",
+                   get_collection=lambda: _FakeIndex(_meta("zhipu", "embedding-3", 1024))), _ListHandler():
+        out = rag.search("怎么开发票")
+    assert out.startswith("知识库检索失败：embedding 配置错误") and parse_retrieval("q", out).status == "error"
+
+    # 一致时照常命中（默认 zhipu 配置）
+    zhipu = rag.load_embedding_config({})
+    with _RagPatch(CONFIG=zhipu, embed_texts=lambda texts: [[0.0] * 1024 for _ in texts],
+                   get_collection=lambda: _FakeIndex(_meta("zhipu", "embedding-3", 1024))):
+        r = parse_retrieval("q", rag.search("怎么开发票"))
+    assert r.status == "hit" and r.hits[0].similarity == 0.8
+    print("✅ search：不一致 / 配置错误返回『知识库检索失败：』（判为 error），provider 不一致时不调用 embedding")
+
+
+def test_build_refuses_mismatched_index():
+    """build_kb：已有数据但与当前配置不一致时，不跳过、不追加，要求 --rebuild；一致时照旧跳过。"""
+    import rag
+
+    called = []
+    ollama = rag.load_embedding_config({"EMBEDDING_PROVIDER": "ollama"})
+    with _RagPatch(CONFIG=ollama, embed_texts=lambda texts, stage="build": called.append(1),
+                   get_collection=lambda: _FakeIndex(_meta("zhipu", "embedding-3", 1024))):
+        try:
+            rag.build_knowledge_base()
+        except rag.IndexMismatchError as e:
+            assert "--rebuild" in str(e) and "13 个 chunk" in str(e)
+        else:
+            raise AssertionError("不一致时应当拒绝")
+        assert called == []
+
+    with _RagPatch(CONFIG=ollama, get_collection=lambda: _FakeIndex(_meta("ollama", "bge-m3", 1024))):
+        stats = rag.build_knowledge_base()
+    assert stats["skipped"] is True and stats["chunks"] == 13
+    print("✅ build_kb：不一致的库拒绝继续（需 --rebuild），一致时跳过")
+
+
+def test_build_and_search_with_real_chroma():
+    """真实 ChromaDB（临时目录）+ 假 embedding：建库写入元数据、读回校验、切换配置后失败、--rebuild 后恢复。"""
+    import tempfile
+
+    import rag
+    from retrieval_trace import parse_retrieval
+
+    def fake_embed(texts, stage="search"):
+        # 确定性的 3 维向量；查询"发票"与第 11 篇（发票政策）方向最接近
+        return [[1.0, 0.0, 0.1] if ("发票" in t) else [0.0, 1.0, 0.1] for t in texts]
+
+    zhipu = rag.load_embedding_config({})
+    ollama = rag.load_embedding_config({"EMBEDDING_PROVIDER": "ollama"})
+    with _RagPatch(CHROMA_DIR=tempfile.mkdtemp(), _collection_cache=None, CONFIG=zhipu, embed_texts=fake_embed,
+                   get_collection=rag.get_collection), _ListHandler() as logs:
+        stats = rag.build_knowledge_base()
+        assert stats["skipped"] is False and stats["chunks"] == 13
+        meta = rag.get_collection().metadata
+        assert meta == _meta("zhipu", "embedding-3", 3), meta
+        assert rag.index_info() == {"embedding_provider": "zhipu", "embedding_model": "embedding-3", "embedding_dimension": 3}
+        assert rag.log_index_status() == "ok"
+
+        r = parse_retrieval("q", rag.search("开发票"))
+        assert r.status == "hit" and "11-发票政策" in [h.source for h in r.hits], r
+
+        # 再跑一次：一致 → 跳过
+        assert rag.build_knowledge_base()["skipped"] is True
+
+        # 换成 ollama 配置但不重建：检索、建库、启动日志都明确失败
+        rag.CONFIG = ollama
+        assert parse_retrieval("q", rag.search("开发票")).status == "error"
+        assert rag.log_index_status() == "mismatch"
+        try:
+            rag.build_knowledge_base()
+        except rag.IndexMismatchError:
+            pass
+        else:
+            raise AssertionError("应当要求 --rebuild")
+
+        # 重建失败（embedding 抛异常）时旧库原样保留
+        def broken(texts, stage="search"):
+            raise RuntimeError("embedding down")
+        rag.embed_texts = broken
+        try:
+            rag.build_knowledge_base(rebuild=True)
+        except RuntimeError:
+            pass
+        assert rag.get_collection().count() == 13 and rag.get_collection().metadata["embedding_provider"] == "zhipu"
+
+        # --rebuild 成功后元数据换成 ollama
+        rag.embed_texts = fake_embed
+        rag.build_knowledge_base(rebuild=True)
+        assert rag.get_collection().metadata == _meta("ollama", "bge-m3", 3)
+        assert parse_retrieval("q", rag.search("开发票")).status == "hit"
+        assert "不一致" in logs.text("ERROR")
+    print("✅ 真实 ChromaDB：建库写入元数据并读回，换配置不重建时失败，重建失败不删旧库，--rebuild 后恢复")
+
+
+def test_log_index_status():
+    import rag
+
+    zhipu = rag.load_embedding_config({})
+    with _ListHandler() as logs:
+        with _RagPatch(CONFIG=zhipu, get_collection=lambda: _FakeIndex(_meta("zhipu", "embedding-3", 1024))):
+            assert rag.log_index_status() == "ok"
+        with _RagPatch(CONFIG=zhipu, _legacy_warned=False, get_collection=lambda: _FakeIndex({"hnsw:space": "cosine"})):
+            assert rag.log_index_status() == "legacy"
+        with _RagPatch(CONFIG=zhipu, get_collection=lambda: _FakeIndex(_meta("zhipu", "embedding-3", 1024), count=0)):
+            assert rag.log_index_status() == "kb_not_built"
+        with _RagPatch(CONFIG=zhipu, get_collection=lambda: _FakeIndex(_meta("ollama", "bge-m3", 1024))):
+            assert rag.log_index_status() == "mismatch"
+        with _RagPatch(CONFIG=None, CONFIG_ERROR="bad"):
+            assert rag.log_index_status() == "config_error"
+    print("✅ 启动日志：ok / legacy / kb_not_built / mismatch / config_error")
+
+
+def test_embedding_retry_and_requests():
+    """重试：连接类错误最多 3 次（等 1s、3s），读超时和 HTTP 错误不重试；请求格式按 provider 区分；日志不含 key。"""
+    import httpx
+
+    import rag
+    from retrieval_trace import parse_retrieval
+
+    SECRET = "sk-test-SECRET-123"
+    zhipu = rag.load_embedding_config({"EMBEDDING_BASE_URL": "https://emb.example/v4/", "EMBEDDING_API_KEY": SECRET})
+    ollama = rag.load_embedding_config({"EMBEDDING_PROVIDER": "ollama"})
+
+    def run(cfg, script, texts):
+        """script：每次请求的动作，异常类（会被构造并抛出）或 (status, json)。返回 (结果或异常, 请求列表, sleeps)。"""
+        requests, sleeps = [], []
+
+        def handler(request):
+            requests.append(request)
+            action = script[len(requests) - 1]
+            if isinstance(action, type):
+                raise action("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF", request=request)
+            return httpx.Response(action[0], json=action[1])
+
+        with _RagPatch(CONFIG=cfg, _TRANSPORT=httpx.MockTransport(handler), _sleep=sleeps.append):
+            try:
+                out = rag.embed_texts(texts)
+            except Exception as e:  # noqa: BLE001
+                out = e
+        return out, requests, sleeps
+
+    ok_zhipu = (200, {"data": [{"index": 1, "embedding": [0.0, 1.0]}, {"index": 0, "embedding": [1.0, 0.0]}]})
+
+    with _ListHandler() as logs:
+        # 两次连接类错误后成功：按 index 排回原顺序，等待 1s、3s
+        out, reqs, sleeps = run(zhipu, [httpx.ConnectError, httpx.ReadError, ok_zhipu], ["a", "b"])
+        assert out == [[1.0, 0.0], [0.0, 1.0]], out
+        assert len(reqs) == 3 and sleeps == [1.0, 3.0]
+        assert str(reqs[0].url) == "https://emb.example/v4/embeddings"
+        assert reqs[0].headers["Authorization"] == f"Bearer {SECRET}"
+        assert json_body(reqs[0]) == {"model": "embedding-3", "input": ["a", "b"], "dimensions": 1024}
+        warn = logs.text("WARNING")
+        assert "ConnectError" in warn and "ReadError" in warn and "stage=search" in warn and "第 1/3 次" in warn
+
+        # 连续 3 次 ReadError：放弃并抛出原异常
+        out, reqs, sleeps = run(zhipu, [httpx.ReadError] * 3, ["a"])
+        assert isinstance(out, httpx.ReadError) and len(reqs) == 3 and sleeps == [1.0, 3.0]
+        assert "重试次数用尽" in logs.text("ERROR")
+
+        # 读超时不重试
+        out, reqs, sleeps = run(zhipu, [httpx.ReadTimeout, ok_zhipu], ["a", "b"])
+        assert isinstance(out, httpx.ReadTimeout) and len(reqs) == 1 and sleeps == []
+        assert "超时类错误不重试" in logs.text("ERROR")
+        # 连接超时属于连接类错误，重试
+        out, reqs, sleeps = run(zhipu, [httpx.ConnectTimeout, ok_zhipu], ["a", "b"])
+        assert out == [[1.0, 0.0], [0.0, 1.0]] and sleeps == [1.0]
+
+        # HTTP 4xx / 5xx 不重试，报错文案沿用原来的格式
+        for status in (401, 404, 500, 503):
+            out, reqs, sleeps = run(zhipu, [(status, {"error": "x"}), ok_zhipu], ["a"])
+            assert isinstance(out, RuntimeError) and f"embedding 接口返回 {status}" in str(out), out
+            assert len(reqs) == 1 and sleeps == []
+
+        # ollama：/api/embed，不带 Authorization、不发 dimensions；17 条分两批
+        texts = [f"t{i}" for i in range(17)]
+        out, reqs, sleeps = run(ollama, [
+            (200, {"model": "bge-m3", "embeddings": [[float(i), 1.0] for i in range(16)]}),
+            (200, {"model": "bge-m3", "embeddings": [[16.0, 1.0]]}),
+        ], texts)
+        assert out == [[float(i), 1.0] for i in range(17)], out
+        assert [str(r.url) for r in reqs] == ["http://localhost:11434/api/embed"] * 2
+        assert "authorization" not in reqs[0].headers
+        assert json_body(reqs[0]) == {"model": "bge-m3", "input": texts[:16]}
+        assert json_body(reqs[1]) == {"model": "bge-m3", "input": texts[16:]}
+
+        # ollama 返回条数不对 → 明确报错
+        out, _, _ = run(ollama, [(200, {"embeddings": [[1.0]]})], ["a", "b"])
+        assert isinstance(out, RuntimeError) and "期望 2 条" in str(out)
+
+        # zhipu 缺 key：不发请求，报原来的错误
+        out, reqs, _ = run(rag.load_embedding_config({"EMBEDDING_BASE_URL": "https://emb/"}), [ok_zhipu], ["a"])
+        assert isinstance(out, RuntimeError) and "缺少 embedding 配置" in str(out) and reqs == []
+
+        # 经过 search：重试用尽后仍然返回"知识库检索失败："，判为 error
+        requests = []
+
+        def always_eof(request):
+            requests.append(request)
+            raise httpx.ConnectError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF", request=request)
+
+        with _RagPatch(CONFIG=zhipu, _TRANSPORT=httpx.MockTransport(always_eof), _sleep=lambda s: None,
+                       get_collection=lambda: _FakeIndex(_meta("zhipu", "embedding-3", 1024))):
+            out = rag.search("怎么开发票")
+        assert out.startswith("知识库检索失败：[SSL: UNEXPECTED_EOF_WHILE_READING]"), out
+        assert parse_retrieval("q", out).status == "error" and len(requests) == 3
+
+        all_logs = logs.text()
+        assert SECRET not in all_logs and "Bearer" not in all_logs
+    print("✅ embedding 重试：连接类错误重试 3 次（1s/3s），读超时与 HTTP 错误不重试，请求格式正确，日志不含 key")
+
+
+def json_body(request):
+    import json
+
+    return json.loads(request.content)
+
+
+def test_threshold_probe_rule():
+    """阈值选取规则（事先写定）：可分取中点，不可分取 min A 向下取整；过滤率按业务相近 / 无关分列。"""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "evals"))
+    import threshold_probe as tp
+
+    c = tp.choose_threshold([0.7, 0.8], [0.4, 0.5])
+    assert (c["threshold"], c["separable"]) == (0.6, True)
+    c = tp.choose_threshold([0.604], [0.601])  # 中点 0.6025 取整为 0.60 会小于 max U，改保留 4 位
+    assert (c["threshold"], c["separable"]) == (0.6025, True)
+    c = tp.choose_threshold([0.63, 0.7], [0.62, 0.65])
+    assert (c["threshold"], c["separable"]) == (0.63, False)
+    c = tp.choose_threshold([0.579, 0.9], [0.6])
+    assert (c["threshold"], c["separable"]) == (0.57, False)
+    assert tp.describe([]) == {"n": 0, "min": None, "median": None, "max": None}
+    assert tp.describe([0.3, 0.1, 0.2]) == {"n": 3, "min": 0.1, "median": 0.2, "max": 0.3}
+
+    cases = [
+        {"id": "a1", "kind": "answerable", "style": "natural", "expected_source": "11-发票政策"},
+        {"id": "a2", "kind": "answerable", "style": "keyword", "expected_source": "11-发票政策"},
+        {"id": "n1", "kind": "unanswerable", "group": "near", "style": "natural"},
+        {"id": "n2", "kind": "unanswerable", "group": "near", "style": "keyword"},
+        {"id": "o1", "kind": "unanswerable", "group": "off", "style": "natural"},
+    ]
+    s = tp.analyze(cases, [0.70, 0.66, 0.68, 0.50, 0.30])
+    assert (s["threshold"], s["separable"]) == (0.66, False)
+    at = s["at_threshold"]
+    assert at["answerable_kept"] == {"count": 2, "n": 2, "rate": 1.0}
+    assert at["unanswerable_near_filtered"] == {"count": 1, "n": 2, "rate": 0.5}
+    assert at["unanswerable_off_filtered"] == {"count": 1, "n": 1, "rate": 1.0}
+    assert at["unanswerable_keyword_filtered"]["count"] == 1
+    assert s["distributions"]["unanswerable_near"]["max"] == 0.68
+    assert s["distributions"]["answerable_keyword"]["n"] == 1
+
+    tp.validate_cases(cases, {"11-发票政策"})
+    for bad in [
+        [{"id": "x", "kind": "answerable", "style": "natural", "expected_source": "不存在"}],
+        [{"id": "x", "kind": "unanswerable", "style": "natural"}],  # 缺 group
+        [{"id": "x", "kind": "other", "style": "natural"}],
+        [cases[0], cases[0]],  # 重复 id
+    ]:
+        try:
+            tp.validate_cases(bad, {"11-发票政策"})
+        except ValueError:
+            continue
+        raise AssertionError(bad)
+    print("✅ 阈值规则：可分取中点、不可分取 min A 向下取整；过滤率按业务相近 / 无关、按问法分列")
+
+
+def test_eval_tag_naming_and_meta():
+    """run_eval --tag：结果 / 报告文件名带标签（不覆盖 latest 报告），meta 记录 provider / 阈值，不含 key。"""
+    import json
+    import sys, os
+    import tempfile
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "evals"))
+    import rag
+    import run_eval
+
+    class FakeAgent:
+        async def ainvoke(self, state):
+            return {"messages": [*state["messages"], AIMessage(content="好的")]}
+
+    tmp = tempfile.mkdtemp()
+    cases_path = os.path.join(tmp, "tag_cases.json")
+    with open(cases_path, "w", encoding="utf-8") as f:
+        json.dump({"cases": [{"id": "t1", "category": "robustness", "description": "正常",
+                              "messages": [{"role": "user", "content": "你好"}],
+                              "expect": {"reply_contains": ["好的"]}}]}, f, ensure_ascii=False)
+    old = (run_eval.RESULTS_DIR, run_eval.build_agent, sys.argv)
+    run_eval.RESULTS_DIR = os.path.join(tmp, "results")
+    run_eval.build_agent = lambda: FakeAgent()
+    try:
+        sys.argv = ["run_eval.py", "--cases", cases_path, "--tag", "zhipu-embedding-3_t0.25"]
+        run_async(run_eval.main())
+        sys.argv = ["run_eval.py", "--cases", cases_path, "--tag", "bad tag/.."]
+        try:
+            run_async(run_eval.main())
+        except SystemExit as e:
+            assert e.code == 1
+        else:
+            raise AssertionError("非法 tag 应当退出")
+    finally:
+        run_eval.RESULTS_DIR, run_eval.build_agent, sys.argv = old
+
+    files = sorted(os.listdir(os.path.join(tmp, "results")))
+    result_file = [x for x in files if x.endswith(".json")][0]
+    assert result_file.startswith("tag_cases_zhipu-embedding-3_t0.25_"), files
+    assert "tag_cases_latest_report_zhipu-embedding-3_t0.25.md" in files, files
+    assert "tag_cases_latest_report.md" not in files
+    data = json.load(open(os.path.join(tmp, "results", result_file), encoding="utf-8"))
+    meta = data["meta"]
+    assert meta["tag"] == "zhipu-embedding-3_t0.25"
+    assert meta["embedding_provider"] == rag.EMBEDDING_PROVIDER
+    assert meta["similarity_threshold"] == rag.SIMILARITY_THRESHOLD
+    assert "embedding_index" in meta and "API_KEY" not in json.dumps(meta)
+    print("✅ run_eval --tag：文件名带标签、不覆盖 latest 报告，meta 记录 embedding 与阈值")
+
+
 if __name__ == "__main__":
     test_full_loop()
     test_history_window_and_order()
@@ -429,3 +938,12 @@ if __name__ == "__main__":
     test_eval_extract_tool_records()
     test_eval_llm_error_does_not_abort_run()
     test_chat_endpoint_and_index()
+    test_embedding_config_parsing()
+    test_check_index_consistency()
+    test_search_returns_error_on_index_mismatch()
+    test_build_refuses_mismatched_index()
+    test_build_and_search_with_real_chroma()
+    test_log_index_status()
+    test_embedding_retry_and_requests()
+    test_threshold_probe_rule()
+    test_eval_tag_naming_and_meta()
