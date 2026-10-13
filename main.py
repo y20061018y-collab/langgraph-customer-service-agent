@@ -1,5 +1,5 @@
 """
-V0 只需要一个接口：POST /chat
+核心接口是 POST /chat
 
 返回结构里特意把"这一轮到底调用了哪些工具、传了什么参数、拿到了什么结果"
 也吐出来 —— 这条轨迹不是给用户看的，是给你自己调试、以及以后面试时
@@ -10,16 +10,19 @@ V6 起支持多轮会话：请求可携带 session_id，服务端从 PostgreSQL 
 本轮结束后把用户消息和最终回复写回库里（工具调用中间过程不入库）。
 不传 session_id 时自动生成并随响应返回，老用法完全兼容。
 """
+import os
 import uuid
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 from langchain_core.messages import AnyMessage, HumanMessage, AIMessage, ToolMessage
 from pydantic import BaseModel
 
 import db
 from agent import build_agent
+from retrieval_trace import RetrievalTrace, parse_retrieval
 
-app = FastAPI(title="企业客服Agent V0")
+app = FastAPI(title="企业客服与工单 Agent")
 
 _agent = None
 
@@ -46,6 +49,8 @@ class ChatResponse(BaseModel):
     reply: str
     tool_calls: list[ToolCallTrace]
     session_id: str
+    # 向后兼容的新增字段：旧客户端忽略即可
+    retrievals: list[RetrievalTrace] = []
 
 
 def history_to_messages(rows) -> list[AnyMessage]:
@@ -83,6 +88,7 @@ async def chat(req: ChatRequest):
 
     # 把这一轮里所有的 tool_calls 和对应的 ToolMessage 结果配对，组装成轨迹
     trace: list[ToolCallTrace] = []
+    retrievals: list[RetrievalTrace] = []
     pending_calls = {}
     for m in messages:
         if isinstance(m, AIMessage) and m.tool_calls:
@@ -97,6 +103,10 @@ async def chat(req: ChatRequest):
                     tool_output=m.content,
                 )
             )
+            if call_info["name"] == "search_knowledge":
+                retrievals.append(
+                    parse_retrieval(str(call_info["args"].get("query", "")), str(m.content))
+                )
 
     final_reply = messages[-1].content if messages else ""
 
@@ -104,7 +114,9 @@ async def chat(req: ChatRequest):
     await db.save_message(session_id, "user", req.message)
     await db.save_message(session_id, "assistant", final_reply)
 
-    return ChatResponse(reply=final_reply, tool_calls=trace, session_id=session_id)
+    return ChatResponse(
+        reply=final_reply, tool_calls=trace, session_id=session_id, retrievals=retrievals
+    )
 
 
 @app.get("/sessions/{session_id}/history")
@@ -127,6 +139,15 @@ async def get_history(session_id: str):
 async def delete_session(session_id: str):
     deleted = await db.clear_session(session_id)
     return {"session_id": session_id, "deleted": deleted}
+
+
+WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    """演示界面（静态单页，见 web/index.html）。"""
+    return FileResponse(os.path.join(WEB_DIR, "index.html"))
 
 
 @app.get("/health")

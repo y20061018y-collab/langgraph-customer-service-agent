@@ -22,11 +22,16 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 load_dotenv()
 
-# postgresql+asyncpg://用户:密码@主机:端口/库名。注意本机 PostgreSQL 实际监听 5433 端口。
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+asyncpg://postgres:postgres@localhost:5433/agent_demo",
-)
+# postgresql+asyncpg://用户:密码@主机:端口/库名
+# 必须由环境变量（.env）提供，代码里不内置任何默认账号密码。
+# 只检查变量是否存在，不连接数据库，所以 import 仍然不碰网络。
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "未设置 DATABASE_URL。请复制 .env.example 为 .env 并填写，"
+        "格式：postgresql+asyncpg://用户:密码@主机:端口/库名；"
+        "使用 docker compose 时该变量由 compose 自动注入（需要在 .env 中设置 POSTGRES_PASSWORD）。"
+    )
 
 # V6：多轮记忆的滑动窗口大小——每次请求最多携带最近 N 条历史消息给模型，
 # 防止超长会话把 prompt 撑爆（也控制 token 成本）。

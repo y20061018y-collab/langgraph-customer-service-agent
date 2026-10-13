@@ -285,8 +285,6 @@ def search(query: str, top_k: int = 3) -> str:
             f"[{i}]（来源: {source}，相似度 {similarity:.2f}）\n{doc}"
             for i, (similarity, source, doc) in enumerate(hits, start=1)
         ]
-        if not lines:
-            return NOT_FOUND_MSG
         return (
             "从知识库中检索到以下相关片段：\n\n"
             + "\n\n".join(lines)

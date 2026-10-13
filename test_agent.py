@@ -55,19 +55,26 @@ def make_scripted_llm():
 
 
 def run_async(coro):
-    """在独立事件循环里跑一个协程，结束后丢弃连接池。
+    """在独立事件循环里跑一个协程，并在**同一个循环**里丢弃连接池。
 
     asyncpg 连接绑定在创建它的循环上，而 asyncio.run() 每次都开新循环；
     生产环境 uvicorn 只有一个常驻循环不受影响，但测试进程里连续多个
-    asyncio.run 会让连接池里的旧连接失效（Event loop is closed）。
-    所以每次循环结束后显式 dispose，下个循环重建连接。
+    asyncio.run 会让连接池里的旧连接失效。所以每次循环结束前显式 dispose，
+    下个循环重建连接。
+
+    dispose 必须在跑协程的同一个循环里、循环关闭之前 await：如果放在另一个
+    asyncio.run 里，关闭旧连接时会触发 "attached to a different loop" /
+    "Event loop is closed"，打印 "Exception closing connection" 堆栈。
     """
     import db
 
-    try:
-        return asyncio.run(coro)
-    finally:
-        asyncio.run(db.engine.dispose())
+    async def _wrapped():
+        try:
+            return await coro
+        finally:
+            await db.engine.dispose()
+
+    return asyncio.run(_wrapped())
 
 
 def test_full_loop():
@@ -99,7 +106,7 @@ def test_full_loop():
     for tm in tool_messages:
         print(f"   - {tm.name}: {tm.content[:80]}")
 
-    print("\n🎉 V0 最小闭环跑通：agent → tools → agent → tools → agent → tools → agent(结束)")
+    print("\n🎉 最小闭环跑通：agent → tools → agent → tools → agent → tools → agent(结束)")
 
 
 # ---------- V6：会话记忆 ----------
@@ -143,7 +150,282 @@ def test_history_to_messages():
     print("✅ 历史消息正确映射为多轮 messages 数组（user→Human, assistant→AI）")
 
 
+# ---------- 检索轨迹解析（retrieval_trace.py）：5 种 status 各一个测试 ----------
+
+HIT_OUTPUT = (
+    "从知识库中检索到以下相关片段：\n\n"
+    "[1]（来源: 11-发票政策，相似度 0.62）\n发票政策\n支持电子普通发票和增值税专用发票。\n\n"
+    "[2]（来源: 03-退款流程与时效，相似度 0.31）\n退款流程\n仅退款适用于未收到货。"
+    "\n\n（如果以上片段与用户问题无关，请直接告知用户知识库中没有相关内容，不要编造。）"
+)
+
+
+def test_retrieval_constants_match_rag():
+    """retrieval_trace 里重复的降级文案必须与 rag.py 一致，否则解析会漂移。"""
+    import rag
+    import retrieval_trace as rt
+
+    assert rt.NOT_FOUND_MSG == rag.NOT_FOUND_MSG
+    assert rt.KB_NOT_BUILT_MSG == rag.KB_NOT_BUILT_MSG
+    # rag.search 的异常分支以 "知识库检索失败：" 开头（见 rag.py 最后一行 return）
+    assert rt.ERROR_PREFIX == "知识库检索失败"
+    print("✅ retrieval_trace 的降级文案与 rag.py 一致")
+
+
+def test_parse_status_hit():
+    from retrieval_trace import parse_retrieval
+
+    r = parse_retrieval("怎么开发票", HIT_OUTPUT)
+    assert (r.status, r.degraded, r.query) == ("hit", False, "怎么开发票")
+    assert [h.source for h in r.hits] == ["11-发票政策", "03-退款流程与时效"]
+    assert [h.similarity for h in r.hits] == [0.62, 0.31]
+    assert r.hits[0].snippet == "发票政策\n支持电子普通发票和增值税专用发票。"
+    assert "如果以上片段" not in r.hits[1].snippet
+    print("✅ status=hit：来源、相似度、片段（含多行）解析正确")
+
+
+def test_parse_status_not_found():
+    import rag
+    from retrieval_trace import parse_retrieval
+
+    r = parse_retrieval("q", rag.NOT_FOUND_MSG)
+    assert (r.status, r.degraded, r.hits) == ("not_found", True, [])
+    print("✅ status=not_found")
+
+
+def test_parse_status_kb_not_built():
+    import rag
+    from retrieval_trace import parse_retrieval
+
+    r = parse_retrieval("q", rag.KB_NOT_BUILT_MSG)
+    assert (r.status, r.degraded, r.hits) == ("kb_not_built", True, [])
+    print("✅ status=kb_not_built")
+
+
+def test_parse_status_error():
+    from retrieval_trace import parse_retrieval
+
+    out = "知识库检索失败：[SSL: UNEXPECTED_EOF_WHILE_READING] EOF。请告知用户暂时无法查询知识库。"
+    r = parse_retrieval("q", out)
+    assert (r.status, r.degraded, r.hits) == ("error", True, [])
+    print("✅ status=error（embedding / 网络异常）")
+
+
+def test_parse_status_unknown():
+    """格式异常：识别不出来记为 unknown，不能默认当 hit，也不下"是否降级"的结论。"""
+    from retrieval_trace import parse_retrieval
+
+    for bad in [
+        "",
+        "一段完全无关的文字",
+        "从知识库中检索到以下相关片段：\n\n（没有任何片段头部）",
+        "[1]（来源: x，相似度 1.2.3）\n内容",  # 分数无法转成 float
+    ]:
+        r = parse_retrieval("q", bad)
+        assert (r.status, r.degraded, r.hits) == ("unknown", None, []), (bad, r)
+    print("✅ status=unknown：格式异常不会被当作 hit")
+
+
+def test_parse_real_rag_search_output():
+    """用真实的 rag.search 产生输出，再交给 parse_retrieval：rag.py 的文案或片段格式一变，这里会失败。
+
+    只 monkeypatch 外部依赖（embedding 接口、ChromaDB 集合），rag.search 本身是真实代码。
+    """
+    import rag
+    from retrieval_trace import parse_retrieval
+
+    class FakeCollection:
+        def __init__(self, distances):
+            self.distances = distances
+
+        def count(self):
+            return 2
+
+        def query(self, **kwargs):
+            return {
+                "documents": [["发票政策\n支持电子普通发票。", "退款流程\n仅退款适用于未收到货。"]],
+                "metadatas": [[{"source": "11-发票政策"}, {"source": "03-退款流程与时效"}]],
+                "distances": [self.distances],
+            }
+
+    saved = (rag.embed_texts, rag.get_collection)
+    try:
+        # error：embedding 接口抛异常，rag.search 走真实的 except 分支
+        def boom(texts):
+            raise RuntimeError("[SSL: UNEXPECTED_EOF_WHILE_READING] EOF")
+
+        rag.embed_texts = boom
+        rag.get_collection = lambda: FakeCollection([0.2, 0.5])
+        out = rag.search("怎么开发票")
+        r = parse_retrieval("怎么开发票", out)
+        assert (r.status, r.degraded, r.hits) == ("error", True, []), (out, r)
+
+        # hit：相似度 0.8 / 0.5（距离 0.2 / 0.5），都高于阈值
+        rag.embed_texts = lambda texts: [[0.0] * 4 for _ in texts]
+        out = rag.search("怎么开发票")
+        r = parse_retrieval("怎么开发票", out)
+        assert (r.status, r.degraded) == ("hit", False), (out, r)
+        assert [h.source for h in r.hits] == ["11-发票政策", "03-退款流程与时效"]
+        assert [h.similarity for h in r.hits] == [0.8, 0.5]
+        assert r.hits[0].snippet == "发票政策\n支持电子普通发票。"
+        assert "如果以上片段" not in r.hits[1].snippet
+
+        # not_found：全部低于阈值（距离 0.9 -> 相似度 0.1 < 0.25）
+        rag.get_collection = lambda: FakeCollection([0.9, 0.95])
+        r = parse_retrieval("q", rag.search("q"))
+        assert (r.status, r.degraded, r.hits) == ("not_found", True, [])
+    finally:
+        rag.embed_texts, rag.get_collection = saved
+    print("✅ 真实 rag.search 的输出经 parse_retrieval：error / hit / not_found 判定正确")
+
+
+def test_eval_extract_tool_records():
+    """run_eval 留档：工具返回只存前 500 字符，结构化 retrievals 全存，且只含 search_knowledge。"""
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "evals"))
+    import run_eval
+    from langchain_core.messages import ToolMessage
+
+    long_hit = HIT_OUTPUT + "x" * 1000
+    result = {
+        "messages": [
+            HumanMessage(content="q"),
+            AIMessage(content="", tool_calls=[
+                {"name": "query_order", "args": {"order_id": "1"}, "id": "a"},
+                {"name": "search_knowledge", "args": {"query": "发票"}, "id": "b"},
+            ]),
+            ToolMessage(content='{"error": "x"}', tool_call_id="a", name="query_order"),
+            ToolMessage(content=long_hit, tool_call_id="b", name="search_knowledge"),
+            AIMessage(content="done"),
+        ]
+    }
+    outputs, retrievals = run_eval.extract_tool_records(result)
+    assert [o["name"] for o in outputs] == ["query_order", "search_knowledge"]
+    assert len(outputs[1]["output"]) == 500 and outputs[1]["truncated"] is True
+    assert outputs[1]["output_chars"] == len(long_hit)
+    assert outputs[0]["truncated"] is False
+    assert len(retrievals) == 1 and retrievals[0]["status"] == "hit"
+    assert [h["source"] for h in retrievals[0]["hits"]] == ["11-发票政策", "03-退款流程与时效"]
+    counts = run_eval.retrieval_status_counts(retrievals)
+    assert counts == {"hit": 1, "not_found": 0, "kb_not_built": 0, "error": 0, "unknown": 0}
+    print("✅ run_eval 留档：返回原文截断到 500 字符，retrievals 完整")
+
+
+def test_eval_llm_error_does_not_abort_run():
+    """对话模型调用抛异常：该用例记为调用异常（不通过、不算模型判断失败），整轮继续，结果文件照常写出。
+
+    用假的 agent（ainvoke 对含 BOOM 的消息抛异常），不调用任何真实接口；
+    结果目录指向临时目录，不污染 evals/results。
+    """
+    import json
+    import sys, os
+    import tempfile
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "evals"))
+    import run_eval
+
+    class FakeAgent:
+        async def ainvoke(self, state):
+            if any("BOOM" in str(m.content) for m in state["messages"]):
+                raise ConnectionError("fake LLM down")
+            return {"messages": [*state["messages"], AIMessage(content="好的")]}
+
+    cases = {"cases": [
+        {"id": "t_err", "category": "robustness", "description": "模型报错",
+         "messages": [{"role": "user", "content": "BOOM"}], "expect": {"reply_contains": ["好的"]}},
+        {"id": "t_ok", "category": "robustness", "description": "正常",
+         "messages": [{"role": "user", "content": "你好"}], "expect": {"reply_contains": ["好的"]}},
+    ]}
+
+    # 单个用例：异常被捕获成记录，而不是向上抛
+    rec = run_async(run_eval.run_case(FakeAgent(), cases["cases"][0], "unit"))
+    assert rec["passed"] is False and rec["failures"] == []
+    assert rec["llm_error"]["type"] == "ConnectionError" and "fake LLM down" in rec["llm_error"]["message"]
+    assert rec["llm_error"]["turn"] == 1
+    run_async(db_clear("eval-unit-t_err"))
+
+    # 整轮：走 main()，第二个用例仍然跑完并通过
+    tmp = tempfile.mkdtemp()
+    cases_path = os.path.join(tmp, "llm_err_cases.json")
+    with open(cases_path, "w", encoding="utf-8") as f:
+        json.dump(cases, f, ensure_ascii=False)
+    old = (run_eval.RESULTS_DIR, run_eval.build_agent, sys.argv)
+    run_eval.RESULTS_DIR = os.path.join(tmp, "results")
+    run_eval.build_agent = lambda: FakeAgent()
+    sys.argv = ["run_eval.py", "--cases", cases_path]
+    try:
+        run_async(run_eval.main())
+    finally:
+        run_eval.RESULTS_DIR, run_eval.build_agent, sys.argv = old
+
+    files = os.listdir(os.path.join(tmp, "results"))
+    result_file = [x for x in files if x.endswith(".json")][0]
+    assert result_file.startswith("llm_err_cases_")
+    data = json.load(open(os.path.join(tmp, "results", result_file), encoding="utf-8"))
+    by_id = {r["id"]: r for r in data["results"]}
+    assert by_id["t_err"]["passed"] is False and by_id["t_err"]["llm_error"]["type"] == "ConnectionError"
+    assert by_id["t_ok"]["passed"] is True and "llm_error" not in by_id["t_ok"]
+    assert (data["meta"]["total"], data["meta"]["passed"]) == (2, 1)
+    assert data["meta"]["llm_error_ids"] == ["t_err"]
+    import rag
+    assert data["meta"]["embedding_model"] == rag.EMBEDDING_MODEL_NAME
+    assert "API_KEY" not in json.dumps(data["meta"])
+    report = open(os.path.join(tmp, "results", "llm_err_cases_latest_report.md"), encoding="utf-8").read()
+    assert "对话模型调用异常" in report and "t_err" in report
+    assert "## 失败用例详情" not in report  # 调用异常不算模型判断失败
+    print("✅ run_eval：对话模型异常记为调用异常，整轮继续，meta 记录 embedding 模型名")
+
+
+async def db_clear(session_id):
+    import db
+    await db.clear_session(session_id)
+
+
+def test_chat_endpoint_and_index():
+    """POST /chat 响应带 retrievals 新字段（旧字段不变），GET / 返回演示页。"""
+    import httpx
+
+    import db
+    import main
+
+    main._agent = build_agent(llm=make_scripted_llm())
+
+    async def run():
+        transport = httpx.ASGITransport(app=main.app)
+        sid = f"test-demo-{uuid.uuid4().hex[:8]}"
+        try:
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+                chat = await c.post("/chat", json={"message": "查订单9527", "session_id": sid})
+                index = await c.get("/")
+            return chat, index
+        finally:
+            await db.clear_session(sid)
+            main._agent = None
+
+    chat, index = run_async(run())
+    body = chat.json()
+    assert chat.status_code == 200, chat.text
+    assert [t["tool_name"] for t in body["tool_calls"]] == [
+        "query_order", "search_knowledge", "create_ticket",
+    ]
+    # 测试环境没有建知识库，search_knowledge 走"知识库尚未建立"降级
+    assert len(body["retrievals"]) == 1
+    assert body["retrievals"][0]["query"] == "物流长时间不更新"
+    assert body["retrievals"][0]["degraded"] is True
+    assert index.status_code == 200 and "text/html" in index.headers["content-type"]
+    print("✅ /chat 返回 retrievals（降级被标出），GET / 返回演示页")
+
+
 if __name__ == "__main__":
     test_full_loop()
     test_history_window_and_order()
     test_history_to_messages()
+    test_retrieval_constants_match_rag()
+    test_parse_status_hit()
+    test_parse_status_not_found()
+    test_parse_status_kb_not_built()
+    test_parse_status_error()
+    test_parse_status_unknown()
+    test_parse_real_rag_search_output()
+    test_eval_extract_tool_records()
+    test_eval_llm_error_does_not_abort_run()
+    test_chat_endpoint_and_index()

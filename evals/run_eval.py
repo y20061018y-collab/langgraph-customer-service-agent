@@ -5,6 +5,8 @@ V7 自动化评测运行器：对 Agent 的工具选择、边界行为、多轮�
 用法（在项目根目录）：
     python evals/run_eval.py                # 跑全部用例
     python evals/run_eval.py boundary       # 只跑某一类（传类别名）
+    python evals/run_eval.py --cases evals/holdout_cases.json   # 跑验证集（结果文件以 holdout_cases_ 开头）
+    python evals/run_eval.py --cases evals/holdout_cases.json --ids holdout_002,holdout_004   # 只重跑指定用例
 
 设计说明：
 - 不走 HTTP、不起 uvicorn：直接 build_agent() 调用，多轮编排逻辑复用
@@ -14,6 +16,7 @@ V7 自动化评测运行器：对 Agent 的工具选择、边界行为、多轮�
   会话历史用 eval- 前缀的独立 session_id，跑完自动清理，不污染正常数据。
 - 评测集与断言逻辑分离：加用例只改 cases.json。
 """
+import argparse
 import asyncio
 import json
 import os
@@ -26,9 +29,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlalchemy import func, select  # noqa: E402
 
 import db  # noqa: E402
+import rag  # noqa: E402  agent 已间接导入过，这里只读 EMBEDDING_MODEL_NAME
 from agent import build_agent  # noqa: E402
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage  # noqa: E402
 from main import history_to_messages  # noqa: E402
+from retrieval_trace import STATUSES, parse_retrieval  # noqa: E402
+
+# 结果文件里每个工具返回原文最多保留的字符数（结构化的 retrievals 不截断）
+OUTPUT_KEEP_CHARS = 500
 
 CASES_FILE = os.path.join(os.path.dirname(__file__), "cases.json")
 RESULTS_DIR = os.path.join(os.path.dirname(__file__), "results")
@@ -57,6 +65,46 @@ def extract_trace(result):
                 trace.append(info)
     reply = messages[-1].content if messages else ""
     return trace, reply
+
+
+def extract_tool_records(result):
+    """只用于留档，不参与判定：提取（工具返回原文截断版, 结构化检索轨迹）。
+
+    工具返回按 OUTPUT_KEEP_CHARS 截断；retrievals 是对每次 search_knowledge
+    调用的完整解析（status / degraded / hits），用来区分"相似度低于阈值的降级
+    （not_found）"和"embedding / 网络异常导致的降级（error）"。
+    """
+    pending = {}
+    outputs, retrievals = [], []
+    for m in result["messages"]:
+        if isinstance(m, AIMessage) and m.tool_calls:
+            for call in m.tool_calls:
+                pending[call["id"]] = {"name": call["name"], "args": call["args"]}
+        if isinstance(m, ToolMessage):
+            info = pending.get(m.tool_call_id)
+            if not info:
+                continue
+            content = str(m.content)
+            outputs.append(
+                {
+                    "name": info["name"],
+                    "output": content[:OUTPUT_KEEP_CHARS],
+                    "output_chars": len(content),
+                    "truncated": len(content) > OUTPUT_KEEP_CHARS,
+                }
+            )
+            if info["name"] == "search_knowledge":
+                retrievals.append(
+                    parse_retrieval(str(info["args"].get("query", "")), content).model_dump()
+                )
+    return outputs, retrievals
+
+
+def retrieval_status_counts(retrievals) -> dict:
+    counts = {s: 0 for s in STATUSES}
+    for r in retrievals:
+        counts[r["status"]] += 1
+    return counts
 
 
 def evaluate(expect, tool_calls, reply) -> list[str]:
@@ -104,23 +152,50 @@ def evaluate(expect, tool_calls, reply) -> list[str]:
     return failures
 
 
+def llm_error_record(case: dict, session_id: str, turn: int, exc: Exception) -> dict:
+    """对话模型调用抛异常时的记录。
+
+    这不是模型判断失败，所以不走 evaluate()、不产生 failures；也不是通过（passed=False）。
+    llm_error 字段非空即表示"调用异常，需按重跑规则重跑"。
+    """
+    return {
+        "id": case["id"],
+        "category": case["category"],
+        "description": case["description"],
+        "passed": False,
+        "failures": [],
+        "llm_error": {"type": type(exc).__name__, "message": str(exc)[:500], "turn": turn},
+        "tools_called": [],
+        "reply": "",
+        "session_id": session_id,
+        "tool_outputs": [],
+        "retrievals": [],
+        "retrieval_status_counts": retrieval_status_counts([]),
+    }
+
+
 async def run_case(agent, case: dict, run_id: str) -> dict:
     """跑一个用例：多轮消息在同一 session 内顺序发送，断言针对最后一轮。"""
     session_id = case.get("session_id") or f"eval-{run_id}-{case['id']}"
     turn_replies = []
 
-    for msg in case["messages"]:
+    for turn, msg in enumerate(case["messages"], start=1):
         history = await db.load_history(session_id)
         input_messages = history_to_messages(history)
         input_messages.append(HumanMessage(content=msg["content"]))
-        result = await agent.ainvoke({"messages": input_messages})
+        try:
+            result = await agent.ainvoke({"messages": input_messages})
+        except Exception as e:  # noqa: BLE001 对话模型调用失败：记录并继续，不中断整轮
+            return llm_error_record(case, session_id, turn, e)
         trace, reply = extract_trace(result)
-        turn_replies.append({"tools": trace, "reply": reply})
+        turn_replies.append({"tools": trace, "reply": reply, "result": result})
         await db.save_message(session_id, "user", msg["content"])
         await db.save_message(session_id, "assistant", reply)
 
     last = turn_replies[-1]
     failures = evaluate(case.get("expect", {}), last["tools"], last["reply"])
+    # 留档字段（只记录最后一轮，与断言对象一致），不影响 passed
+    tool_outputs, retrievals = extract_tool_records(last["result"])
     return {
         "id": case["id"],
         "category": case["category"],
@@ -130,19 +205,52 @@ async def run_case(agent, case: dict, run_id: str) -> dict:
         "tools_called": last["tools"],
         "reply": last["reply"],
         "session_id": session_id,
+        "tool_outputs": tool_outputs,
+        "retrievals": retrievals,
+        "retrieval_status_counts": retrieval_status_counts(retrievals),
     }
 
 
 async def main():
-    category_filter = sys.argv[1] if len(sys.argv) > 1 else None
+    parser = argparse.ArgumentParser(description="Agent 自动化评测")
+    parser.add_argument("category", nargs="?", help="只跑某一类用例（类别名）")
+    parser.add_argument(
+        "--cases",
+        default=CASES_FILE,
+        help="用例文件路径，默认 evals/cases.json；例如验证集：--cases evals/holdout_cases.json",
+    )
+    parser.add_argument(
+        "--ids",
+        help="只跑指定用例，逗号分隔，例如 --ids holdout_002,holdout_004；"
+        "结果与报告会标注为重跑，不覆盖完整运行的 latest 报告",
+    )
+    args = parser.parse_args()
+    category_filter = args.category
+    id_filter = [i.strip() for i in args.ids.split(",") if i.strip()] if args.ids else None
 
-    with open(CASES_FILE, encoding="utf-8") as f:
+    cases_path = args.cases
+    if not os.path.exists(cases_path):  # 允许只写 evals/ 下的文件名
+        cases_path = os.path.join(os.path.dirname(__file__), args.cases)
+    cases_name = os.path.basename(cases_path)
+    # 默认用例集沿用原来的文件名；其他用例集加前缀，避免覆盖 / 混淆
+    is_default = os.path.abspath(cases_path) == os.path.abspath(CASES_FILE)
+    cases_stem = os.path.splitext(cases_name)[0]
+
+    with open(cases_path, encoding="utf-8") as f:
         cases = json.load(f)["cases"]
     if category_filter:
         cases = [c for c in cases if c["category"] == category_filter]
         if not cases:
             print(f"没有类别为 {category_filter} 的用例，可选：{list(CATEGORY_NAMES)}")
             sys.exit(1)
+
+    if id_filter:
+        known = {c["id"] for c in cases}
+        unknown = [i for i in id_filter if i not in known]
+        if unknown:
+            print(f"用例集中没有这些 id：{unknown}")
+            sys.exit(1)
+        cases = [c for c in cases if c["id"] in id_filter]
 
     await db.ensure_tables()
 
@@ -159,10 +267,12 @@ async def main():
     for case in cases:
         record = await run_case(agent, case, run_id)
         records.append(record)
-        mark = "✅" if record["passed"] else "❌"
+        mark = "✅" if record["passed"] else ("⚠️ 调用异常" if record.get("llm_error") else "❌")
         print(f"{mark} [{record['category']}] {record['id']}: {record['description']}")
         for f in record["failures"]:
             print(f"     ↳ {f}")
+        if record.get("llm_error"):
+            print(f"     ↳ {record['llm_error']['type']}: {record['llm_error']['message']}")
 
     # ---- 汇总报告 ----
     total = len(records)
@@ -178,8 +288,33 @@ async def main():
         "# Agent 评测报告",
         "",
         f"- 运行时间：{started.strftime('%Y-%m-%d %H:%M:%S')}（耗时 {duration:.0f}s）",
+        f"- 用例集：{cases_name}",
         f"- 模型：{os.getenv('LLM_MODEL_NAME', '?')}（temperature=0）",
         f"- 总用例：{total}，通过：{passed}，**通过率 {passed / total * 100:.0f}%**",
+    ]
+    if id_filter:
+        lines.append(f"- ⚠️ 本次是指定用例的重跑（--ids {','.join(id_filter)}），不是完整运行")
+    # 检索状态汇总（只记录，不参与判定）：error = embedding / 网络等异常，not_found = 全部低于相似度阈值
+    status_total = {s: 0 for s in STATUSES}
+    for r in records:
+        for s, n in r["retrieval_status_counts"].items():
+            status_total[s] += n
+    lines.append(
+        "- 本次检索状态（search_knowledge 调用次数）："
+        + "，".join(f"{s} {n}" for s, n in status_total.items())
+    )
+    error_ids = [r["id"] for r in records if r["retrieval_status_counts"]["error"] > 0]
+    if error_ids:
+        lines.append(f"- ⚠️ 检索异常（status=error，可能是基础设施故障而非模型问题）的用例：{'、'.join(error_ids)}")
+    llm_error_ids = [r["id"] for r in records if r.get("llm_error")]
+    if llm_error_ids:
+        lines.append(
+            f"- ⚠️ 对话模型调用异常的用例（不计为模型判断失败，也不算通过，需按重跑规则重跑）：{'、'.join(llm_error_ids)}"
+        )
+    unknown_ids = [r["id"] for r in records if r["retrieval_status_counts"]["unknown"] > 0]
+    if unknown_ids:
+        lines.append(f"- ⚠️ 检索返回格式无法识别（status=unknown）的用例：{'、'.join(unknown_ids)}")
+    lines += [
         "",
         "| 类别 | 用例数 | 通过 | 通过率 |",
         "| --- | --- | --- | --- |",
@@ -190,7 +325,13 @@ async def main():
             f"| {CATEGORY_NAMES.get(cat, cat)} | {len(rs)} | {p} | {p / len(rs) * 100:.0f}% |"
         )
 
-    failed = [r for r in records if not r["passed"]]
+    failed = [r for r in records if not r["passed"] and not r.get("llm_error")]
+    llm_errors = [r for r in records if r.get("llm_error")]
+    if llm_errors:
+        lines += ["", "## 调用异常用例（需重跑）", ""]
+        for r in llm_errors:
+            e = r["llm_error"]
+            lines.append(f"- {r['id']}（{CATEGORY_NAMES.get(r['category'])}，第 {e['turn']} 轮）：{e['type']}: {e['message']}")
     if failed:
         lines += ["", "## 失败用例详情", ""]
         for r in failed:
@@ -200,17 +341,26 @@ async def main():
                 lines.append(f"- ❌ {f}")
             lines.append(f"- 实际工具调用：`{json.dumps(r['tools_called'], ensure_ascii=False)}`")
             lines.append(f"- 实际回复开头：{r['reply'][:150]!r}")
+            lines.append(f"- 检索状态：{json.dumps(r['retrieval_status_counts'], ensure_ascii=False)}")
             lines.append("")
 
     os.makedirs(RESULTS_DIR, exist_ok=True)
-    result_file = os.path.join(RESULTS_DIR, f"eval_{stamp}.json")
+    result_prefix = "eval" if is_default else cases_stem
+    # 重跑（--ids）的结果文件加 rerun 标记，报告不覆盖完整运行的 latest 报告
+    rerun_tag = "_rerun" if id_filter else ""
+    result_file = os.path.join(RESULTS_DIR, f"{result_prefix}{rerun_tag}_{stamp}.json")
     with open(result_file, "w", encoding="utf-8") as f:
         json.dump(
-            {"meta": {"time": stamp, "model": os.getenv("LLM_MODEL_NAME"), "total": total, "passed": passed},
+            {"meta": {"time": stamp, "model": os.getenv("LLM_MODEL_NAME"), "total": total, "passed": passed,
+                      "cases_file": cases_name, "ids": id_filter,
+                      "retrieval_error_ids": error_ids, "retrieval_unknown_ids": unknown_ids,
+                      "llm_error_ids": llm_error_ids, "embedding_model": rag.EMBEDDING_MODEL_NAME},
              "results": records},
             f, ensure_ascii=False, indent=2,
         )
-    report_file = os.path.join(RESULTS_DIR, "latest_report.md")
+    report_stem = "latest_report" if is_default else f"{cases_stem}_latest_report"
+    report_name = f"{report_stem}{'_rerun' if id_filter else ''}.md"
+    report_file = os.path.join(RESULTS_DIR, report_name)
     with open(report_file, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
 

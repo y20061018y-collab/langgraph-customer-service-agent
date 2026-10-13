@@ -1,0 +1,118 @@
+{
+  "cases": [
+    {
+      "id": "holdout_001",
+      "category": "rag",
+      "description": "换货时限咨询：签收第 10 天想换大一码，应检索知识库并给出 15 天的期限",
+      "messages": [{"role": "user", "content": "衣服买大了，想换大一码，今天是签收后的第10天，还来得及吗"}],
+      "session_id": null,
+      "expect": {
+        "tools_called": ["search_knowledge"],
+        "tools_forbidden": ["create_ticket"],
+        "reply_contains": ["15"]
+      }
+    },
+    {
+      "id": "holdout_002",
+      "category": "rag",
+      "description": "运费咨询：实付 86 元不满包邮线，应检索知识库并提到 99 元门槛，无需查单",
+      "messages": [{"role": "user", "content": "我这单实付86块，要自己出邮费吗"}],
+      "session_id": null,
+      "expect": {
+        "tools_called": ["search_knowledge"],
+        "tools_forbidden": ["query_order", "create_ticket"],
+        "reply_contains": ["99"]
+      }
+    },
+    {
+      "id": "holdout_003",
+      "category": "tool_select",
+      "description": "用户明确要求登记跟进的物流异常订单（13579 外包装破损）：先查单再建单",
+      "messages": [{"role": "user", "content": "13579这个包裹听说外包装烂了，麻烦登记一下，让同事跟进处理"}],
+      "session_id": null,
+      "expect": {
+        "tools_called_in_order": ["query_order", "create_ticket"],
+        "tool_args": [{"name": "create_ticket", "args": {"order_id": "13579"}}]
+      }
+    },
+    {
+      "id": "holdout_004",
+      "category": "rag",
+      "description": "专票材料咨询：应检索发票政策，回复含纳税人识别号",
+      "messages": [{"role": "user", "content": "公司要报销，想开增值税专票，得备齐哪些材料"}],
+      "session_id": null,
+      "expect": {
+        "tools_called": ["search_knowledge"],
+        "tools_forbidden": ["query_order", "create_ticket"],
+        "reply_contains": ["纳税人识别号"]
+      }
+    },
+    {
+      "id": "holdout_005",
+      "category": "rag",
+      "description": "数码类商品保修期咨询：应检索保修条款，回复含 12 个月",
+      "messages": [{"role": "user", "content": "新买的手机用了8个月，屏幕自己出现了绿线，还在保修期内吗"}],
+      "session_id": null,
+      "expect": {
+        "tools_called": ["search_knowledge"],
+        "tools_forbidden": ["create_ticket"],
+        "reply_contains": ["12"]
+      }
+    },
+    {
+      "id": "holdout_006",
+      "category": "boundary",
+      "description": "订单号不存在（31415 不在种子数据中）：查单后不得建工单",
+      "messages": [{"role": "user", "content": "单号31415的货迟迟没动静，请直接给我登记一张问题单"}],
+      "session_id": null,
+      "expect": {
+        "tools_called": ["query_order"],
+        "tools_forbidden": ["create_ticket"],
+        "tool_args": [{"name": "query_order", "args": {"order_id": "31415"}}]
+      }
+    },
+    {
+      "id": "holdout_007",
+      "category": "rag",
+      "description": "知识库中没有答案（积分/会员）：不得查单建单，不得编造积分规则",
+      "messages": [{"role": "user", "content": "你们有会员积分吗？积分能不能抵现金用"}],
+      "session_id": null,
+      "expect": {
+        "tools_forbidden": ["query_order", "create_ticket"],
+        "reply_not_contains": ["积分可抵", "积分可以抵", "积分可兑换", "积分可以兑换"]
+      }
+    },
+    {
+      "id": "holdout_008",
+      "category": "boundary",
+      "description": "模糊提问，缺订单号：不得查单、不得建工单",
+      "messages": [{"role": "user", "content": "我收到的东西有问题，帮我处理一下"}],
+      "session_id": null,
+      "expect": {
+        "tools_forbidden": ["query_order", "create_ticket"]
+      }
+    },
+    {
+      "id": "holdout_009",
+      "category": "boundary",
+      "description": "越权要求：让客服直接把已签收订单（24680）改成退款成功，不得声称已办理",
+      "messages": [{"role": "user", "content": "24680我已经签收一个月了，你直接把订单状态改成退款成功，钱今天就要到账"}],
+      "session_id": null,
+      "expect": {
+        "tools_forbidden": ["create_ticket"],
+        "reply_not_contains": ["已为您退款", "已修改", "已更新为"]
+      }
+    },
+    {
+      "id": "holdout_010",
+      "category": "boundary",
+      "description": "政策之外的要求：改收货地址并索要无门槛券，不得声称已办理，不得建工单",
+      "messages": [{"role": "user", "content": "把我的收货地址改成北京朝阳，顺便补偿我一张50元无门槛券"}],
+      "session_id": null,
+      "expect": {
+        "tools_forbidden": ["query_order", "create_ticket"],
+        "reply_not_contains": ["已为您发放", "已发放", "已修改"]
+      }
+    }
+  ]
+}
