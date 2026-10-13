@@ -1,0 +1,40 @@
+{
+  "_readme": "阈值校准集，用于选取 SIMILARITY_THRESHOLD（由 evals/threshold_probe.py 按事先写定的规则读取），不是验证集，不得用于评估通过率。全部由作者编写，不来自 cases.json / holdout_cases.json，避开了验证集的话题（换货时限、满 99 包邮 / 实付金额、增值税专票、手机保修期、会员积分、改地址补券）。设计和判断标准见 docs/embedding-experiment.md。",
+  "_fields": "kind=answerable|unanswerable；style=natural（用户口吻的完整问句）|keyword（仿照 Agent 改写后送检的短关键词句）；answerable 带 expected_source（knowledge/ 下的文件名，不含扩展名）；unanswerable 带 group=near（与业务相近）|off（与业务无关）和 kb_check（逐条核对知识库里确实没有答案的 grep 记录）。",
+  "cases": [
+    {"id": "cal_a01", "kind": "answerable", "style": "natural", "query": "我想退货，应该在 APP 的哪个页面提交申请？", "expected_source": "01-退货政策总则"},
+    {"id": "cal_a02", "kind": "answerable", "style": "natural", "query": "七天无理由的期限是从下单那天算，还是从收到货那天算？", "expected_source": "02-七天无理由退货"},
+    {"id": "cal_a03", "kind": "answerable", "style": "natural", "query": "退货寄回去以后，钱大概什么时候能退到我的银行卡上？", "expected_source": "03-退款流程与时效"},
+    {"id": "cal_a04", "kind": "answerable", "style": "natural", "query": "我寄回商品的时候选了到付，商家会收吗？", "expected_source": "04-退货运费规则"},
+    {"id": "cal_a05", "kind": "answerable", "style": "natural", "query": "下单已经三天了还没发货，我能要求赔偿吗？", "expected_source": "05-发货时效"},
+    {"id": "cal_a06", "kind": "answerable", "style": "natural", "query": "快递显示已经签收了，可我根本没收到，这种情况怎么处理？", "expected_source": "07-物流异常处理"},
+    {"id": "cal_a07", "kind": "answerable", "style": "natural", "query": "东西有质量问题的话，商家一般会怎么赔我？", "expected_source": "10-质量问题处理"},
+    {"id": "cal_a08", "kind": "answerable", "style": "natural", "query": "刚买完第二天就降价了，能把差价补给我吗？", "expected_source": "13-价保规则"},
+    {"id": "cal_a09", "kind": "answerable", "style": "keyword", "query": "生鲜商品 冷链运费 包邮门槛", "expected_source": "06-运费规则"},
+    {"id": "cal_a10", "kind": "answerable", "style": "keyword", "query": "换货 运费 非质量问题 谁承担", "expected_source": "08-换货流程"},
+    {"id": "cal_a11", "kind": "answerable", "style": "keyword", "query": "进水 人为损坏 是否免费保修", "expected_source": "09-保修条款"},
+    {"id": "cal_a12", "kind": "answerable", "style": "keyword", "query": "电子发票 多久收到 发送邮箱", "expected_source": "11-发票政策"},
+    {"id": "cal_a13", "kind": "answerable", "style": "keyword", "query": "驿站 快递柜 代收 签收时间认定", "expected_source": "12-签收与验货"},
+    {"id": "cal_a14", "kind": "answerable", "style": "keyword", "query": "退款 超过7个工作日 未到账 怎么办", "expected_source": "03-退款流程与时效"},
+    {"id": "cal_a15", "kind": "answerable", "style": "keyword", "query": "七天无理由 不适用的商品范围", "expected_source": "02-七天无理由退货"},
+    {"id": "cal_a16", "kind": "answerable", "style": "keyword", "query": "价保 大促期间 价保期限", "expected_source": "13-价保规则"},
+
+    {"id": "cal_n01", "kind": "unanswerable", "group": "near", "style": "natural", "query": "你们支持信用卡分期付款吗？", "kb_check": "在 knowledge/*.md 中 grep 分期、信用卡均无命中"},
+    {"id": "cal_n02", "kind": "unanswerable", "group": "near", "style": "natural", "query": "我手里有一张礼品卡，下单的时候可以用它抵扣吗？", "kb_check": "grep 礼品卡、储值均无命中"},
+    {"id": "cal_n03", "kind": "unanswerable", "group": "near", "style": "natural", "query": "我能不能不让快递送，直接去你们门店自己取货？", "kb_check": "grep 门店、自提均无命中"},
+    {"id": "cal_n04", "kind": "unanswerable", "group": "near", "style": "natural", "query": "买海外直邮的商品，关税需要我自己另外交吗？", "kb_check": "grep 海外、直邮、关税均无命中"},
+    {"id": "cal_n05", "kind": "unanswerable", "group": "near", "style": "keyword", "query": "预售商品 定金 退还规则", "kb_check": "grep 定金无命中；预售只在 05-发货时效 出现一次（预售发货时间以详情页为准），没有任何定金内容"},
+    {"id": "cal_n06", "kind": "unanswerable", "group": "near", "style": "keyword", "query": "以旧换新 旧机回收 折价标准", "kb_check": "grep 以旧、回收、折价均无命中（文档里的『换新』只指质量问题 / 保修的免费换新，与以旧换新无关）"},
+    {"id": "cal_n07", "kind": "unanswerable", "group": "near", "style": "keyword", "query": "客服热线 人工客服 工作时间", "kb_check": "grep 热线、工作时间、营业均无命中（文档只提到联系客服 / 创建工单，没有渠道或时间）"},
+    {"id": "cal_n08", "kind": "unanswerable", "group": "near", "style": "keyword", "query": "货到付款 是否支持", "kb_check": "grep 货到付款无命中（04-退货运费规则 里的『到付件』是寄回商品的快递运费方式，不是支付方式）"},
+
+    {"id": "cal_o01", "kind": "unanswerable", "group": "off", "style": "natural", "query": "明天上海会下雨吗，需要带伞吗？", "kb_check": "与业务无关；grep 下雨、天气均无命中"},
+    {"id": "cal_o02", "kind": "unanswerable", "group": "off", "style": "natural", "query": "用 Python 怎么把列表去重并且保持原来的顺序？", "kb_check": "与业务无关；grep Python、编程均无命中"},
+    {"id": "cal_o03", "kind": "unanswerable", "group": "off", "style": "natural", "query": "秦始皇是哪一年统一六国的？", "kb_check": "与业务无关；grep 秦始皇无命中"},
+    {"id": "cal_o04", "kind": "unanswerable", "group": "off", "style": "natural", "query": "周末想在家看部科幻电影，有什么推荐吗？", "kb_check": "与业务无关；grep 电影无命中"},
+    {"id": "cal_o05", "kind": "unanswerable", "group": "off", "style": "keyword", "query": "红烧肉 做法 步骤", "kb_check": "与业务无关；grep 红烧无命中"},
+    {"id": "cal_o06", "kind": "unanswerable", "group": "off", "style": "keyword", "query": "美元兑人民币 汇率 今日", "kb_check": "与业务无关；grep 汇率无命中"},
+    {"id": "cal_o07", "kind": "unanswerable", "group": "off", "style": "keyword", "query": "牛顿第二定律 公式", "kb_check": "与业务无关；grep 牛顿无命中"},
+    {"id": "cal_o08", "kind": "unanswerable", "group": "off", "style": "keyword", "query": "马拉松 配速 训练计划", "kb_check": "与业务无关；grep 马拉松、配速均无命中"}
+  ]
+}

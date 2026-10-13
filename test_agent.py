@@ -1274,6 +1274,44 @@ def test_threshold_probe_aborts_on_bad_index():
     print("✅ threshold_probe：维度不一致 / 元数据残缺时在发请求之前退出")
 
 
+def test_threshold_probe_calibration_set_is_valid():
+    """真实的 evals/threshold_probe.json：通过 validate_cases，各子集数量符合预先登记的设计，覆盖全部 13 篇文档。"""
+    import json
+    import os
+    import sys
+    from collections import Counter
+
+    root = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, os.path.join(root, "evals"))
+    import threshold_probe as tp
+
+    cases = json.load(open(os.path.join(root, "evals", "threshold_probe.json"), encoding="utf-8"))["cases"]
+    sources = {os.path.splitext(f)[0] for f in os.listdir(os.path.join(root, "knowledge")) if f.endswith((".md", ".txt"))}
+    assert len(sources) == 13, sources
+    tp.validate_cases(cases, sources)  # 含 id 不重复、kind / style / expected_source / group 合法
+
+    assert len({c["id"] for c in cases}) == len(cases) == 32
+    n = Counter((c["kind"], c.get("group"), c["style"]) for c in cases)
+    assert n == Counter({
+        ("answerable", None, "natural"): 8, ("answerable", None, "keyword"): 8,
+        ("unanswerable", "near", "natural"): 4, ("unanswerable", "near", "keyword"): 4,
+        ("unanswerable", "off", "natural"): 4, ("unanswerable", "off", "keyword"): 4,
+    }), n
+    answerable = [c for c in cases if c["kind"] == "answerable"]
+    assert {c["expected_source"] for c in answerable} == sources  # 每篇文档至少 1 条
+    assert all(c["query"].strip() for c in cases)
+    assert len({c["query"] for c in cases}) == len(cases)
+    assert all(c.get("kb_check") for c in cases if c["kind"] == "unanswerable")  # 逐条记录过对知识库的核对
+
+    # 与两个已有用例集不重复（文字层面）
+    existing = set()
+    for name in ("cases.json", "holdout_cases.json"):
+        for case in json.load(open(os.path.join(root, "evals", name), encoding="utf-8"))["cases"]:
+            existing |= {m["content"] for m in case["messages"] if m["role"] == "user"}
+    assert not ({c["query"] for c in cases} & existing)
+    print("✅ 校准集：32 条（可回答 16 / near 8 / off 8，自然 / 关键词各半），覆盖全部 13 篇文档，通过 validate_cases")
+
+
 class _NoRealChroma:
     """run_eval.main 会读 rag.index_info()：换成固定返回值，并监视 chromadb.PersistentClient，
     保证相关测试不会在项目根目录创建或打开真实的 ./chroma_db。"""
@@ -1436,5 +1474,6 @@ if __name__ == "__main__":
     test_threshold_probe_rule()
     test_threshold_boundaries()
     test_threshold_probe_aborts_on_bad_index()
+    test_threshold_probe_calibration_set_is_valid()
     test_eval_tag_naming_and_meta()
     test_eval_untagged_output_names_unchanged()
